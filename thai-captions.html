@@ -97,13 +97,15 @@ function setP(n,label,f){st={n,label,f:f==null?null:f};upd()}
 function startP(){t0=performance.now();clearInterval(tick);tick=setInterval(upd,500)}
 function endP(m){clearInterval(tick);$("bar").style.display="none";msg(m)}
 const readBuf=(f,cb)=>new Promise((res,rej)=>{const r=new FileReader();r.onprogress=e=>e.lengthComputable&&cb(e.loaded/e.total);r.onload=()=>res(r.result);r.onerror=()=>rej(r.error);r.readAsArrayBuffer(f)});
-// ---- video -> 16 kHz mono WAV
-async function toWav(buf){
-  const AC=window.AudioContext||window.webkitAudioContext,ac=new AC();
-  setP(2,"ถอดรหัสเสียงจากคลิป",null);
-  const dec=await Promise.race([new Promise((res,rej)=>ac.decodeAudioData(buf,res,rej)),
-    new Promise((_,rej)=>setTimeout(()=>rej(new Error("ดึงเสียงนานเกิน 2 นาที ลองคลิปที่สั้นหรือไฟล์เล็กกว่านี้")),120000))]);
-  ac.close();setP(3,"ย่อเสียง",null);
+// ---- audio plumbing (context must be created/resumed inside a tap)
+let actx=null,dst=null,mon=null,msrc=null,forceCap=false;
+vid.preload="auto";
+function ensureCtx(){if(!actx){const AC=window.AudioContext||window.webkitAudioContext;actx=new AC()}if(actx.state!=="running")actx.resume()}
+function ensureSrc(){if(msrc)return;msrc=actx.createMediaElementSource(vid);dst=actx.createMediaStreamDestination();mon=actx.createGain();msrc.connect(dst);msrc.connect(mon);mon.connect(actx.destination)}
+const decodeP=buf=>new Promise((res,rej)=>{const p=actx.decodeAudioData(buf,res,rej);if(p&&p.catch)p.catch(rej)});
+// ---- 16 kHz mono WAV from an AudioBuffer
+async function resampleWav(dec){
+  setP(3,"ย่อเสียง",null);
   const OAC=window.OfflineAudioContext||window.webkitOfflineAudioContext;
   const off=new OAC(1,Math.max(1,Math.ceil(dec.duration*16000)),16000),s=off.createBufferSource();
   s.buffer=dec;s.connect(off.destination);s.start();
@@ -113,6 +115,22 @@ async function toWav(buf){
   o.setUint32(24,16000,true);o.setUint32(28,32000,true);o.setUint16(32,2,true);o.setUint16(34,16,true);ws(36,"data");o.setUint32(40,n*2,true);
   for(let i=0;i<n;i++){const v=Math.max(-1,Math.min(1,d[i]));o.setInt16(44+i*2,v<0?v*32768:v*32767,true)}
   return new Blob([o],{type:"audio/wav"})}
+// ---- fallback: play the clip silently and record its audio (real time, real % progress)
+async function capture(){
+  ensureSrc();
+  const proc=actx.createScriptProcessor(4096,1,1),zero=actx.createGain(),ch=[];zero.gain.value=0;
+  proc.onaudioprocess=e=>ch.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+  msrc.connect(proc);proc.connect(zero);zero.connect(actx.destination);mon.gain.value=0;
+  const dur=vid.duration||1;
+  try{
+    vid.pause();
+    if(vid.currentTime>.05){vid.currentTime=0;await new Promise(r=>vid.addEventListener("seeked",r,{once:true}))}
+    vid.ontimeupdate=()=>setP(2,"บันทึกเสียงจากคลิป (เล่นแบบเงียบ อย่าออกจากหน้านี้)",Math.min(1,vid.currentTime/dur));
+    await new Promise((res,rej)=>{vid.addEventListener("ended",res,{once:true});vid.play().catch(rej)});
+  }finally{vid.ontimeupdate=null;try{msrc.disconnect(proc)}catch(_){}proc.disconnect();mon.gain.value=1}
+  const n=ch.reduce((a,c)=>a+c.length,0),buf=actx.createBuffer(1,Math.max(1,n),actx.sampleRate),d=new Float32Array(n);
+  let o=0;ch.forEach(c=>{d.set(c,o);o+=c.length});buf.copyToChannel(d,0);
+  return resampleWav(buf)}
 function sendGroq(key,wav){return new Promise((res,rej)=>{
   const fd=new FormData();fd.append("file",wav,"a.wav");fd.append("model","whisper-large-v3");fd.append("language","th");
   fd.append("response_format","verbose_json");fd.append("timestamp_granularities[]","word");
@@ -125,11 +143,24 @@ function sendGroq(key,wav){return new Promise((res,rej)=>{
   x.send(fd)})}
 async function transcribe(){
   const key=$("key").value.trim();if(!key)return msg("ใส่ Groq API key ก่อน");if(!file)return msg("เลือกคลิปก่อน");
+  ensureCtx();
   try{localStorage.setItem("gk",key)}catch(_){}
   try{
-    startP();setP(1,`อ่านไฟล์ (${(file.size/1048576).toFixed(0)} MB)`,0);
-    const buf=await readBuf(file,f=>setP(1,`อ่านไฟล์ (${(file.size/1048576).toFixed(0)} MB)`,f));
-    const wav=await toWav(buf);
+    startP();let wav=null;
+    if(!forceCap){
+      try{
+        const mb=(file.size/1048576).toFixed(0);
+        setP(1,`อ่านไฟล์ (${mb} MB)`,0);
+        const buf=await readBuf(file,f=>setP(1,`อ่านไฟล์ (${mb} MB)`,f));
+        setP(2,"ถอดรหัสเสียงจากคลิป",null);
+        const dec=await Promise.race([decodeP(buf),new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")),25000))]);
+        wav=await resampleWav(dec);
+      }catch(e){forceCap=true}
+    }
+    if(!wav){
+      try{wav=await capture()}
+      catch(e){endP("อัดเสียงไม่สำเร็จ ("+(e.name||e.message)+") ถ้าเบราว์เซอร์ไม่ยอมเล่นคลิปเอง ให้แตะปุ่ม 2. ถอดเสียง อีกครั้ง");return}
+    }
     setP(4,"อัปโหลดเสียง",0);
     const j=await sendGroq(key,wav);
     lines=toLines(toWords(j.words||[]));
@@ -182,12 +213,11 @@ $("ps").oninput=e=>S.pos=+e.target.value;
 $("c1").oninput=e=>S.color=e.target.value;$("c2").oninput=e=>S.hi=e.target.value;
 $("st").onchange=e=>S.stroke=e.target.checked;
 // ---- export: record canvas + audio in real time
-let actx=null,dst=null;
 $("ex").onclick=async()=>{
   if(!hasVid||!lines.length)return msg("ต้องเลือกคลิปและถอดเสียงก่อน");
   if(!window.MediaRecorder||!cv.captureStream)return msg("เบราว์เซอร์นี้ยังอัดวิดีโอไม่ได้ ลองอัปเดต iOS");
   try{
-    if(!actx){const AC=window.AudioContext||window.webkitAudioContext;actx=new AC();const s=actx.createMediaElementSource(vid);dst=actx.createMediaStreamDestination();s.connect(dst);s.connect(actx.destination)}
+    ensureCtx();ensureSrc();
     await actx.resume();
     const st=cv.captureStream(30);dst.stream.getAudioTracks().forEach(t=>st.addTrack(t));
     const mt=["video/mp4;codecs=avc1","video/mp4","video/webm;codecs=vp9","video/webm"].find(m=>MediaRecorder.isTypeSupported(m));
