@@ -41,7 +41,7 @@ small{display:block;color:var(--mut);line-height:1.5}
 </head>
 <body>
 <main>
-<h1>Thai Captions</h1>
+<h1>Thai Captions <span style="font-size:12px;color:var(--mut);font-weight:400">v4</span></h1>
 <div class="stage"><canvas id="cv"></canvas></div>
 <video id="vid" playsinline></video>
 <div class="bar"><button id="pl" type="button">▶ เล่น</button><input id="sc" type="range" min="0" max="1000" value="0" aria-label="เลื่อนเวลา"></div>
@@ -126,43 +126,56 @@ async function capture(){
     vid.pause();
     if(vid.currentTime>.05){vid.currentTime=0;await new Promise(r=>vid.addEventListener("seeked",r,{once:true}))}
     vid.ontimeupdate=()=>setP(2,"บันทึกเสียงจากคลิป (เล่นแบบเงียบ อย่าออกจากหน้านี้)",Math.min(1,vid.currentTime/dur));
-    await new Promise((res,rej)=>{vid.addEventListener("ended",res,{once:true});vid.play().catch(rej)});
+    await new Promise((res,rej)=>{
+      const w=setTimeout(()=>{if(vid.currentTime<.2)rej(new Error("คลิปไม่เริ่มเล่น (audio="+actx.state+", ready="+vid.readyState+")"))},8000);
+      vid.addEventListener("ended",()=>{clearTimeout(w);res()},{once:true});
+      vid.play().catch(e=>{clearTimeout(w);rej(e)})});
   }finally{vid.ontimeupdate=null;try{msrc.disconnect(proc)}catch(_){}proc.disconnect();mon.gain.value=1}
   const n=ch.reduce((a,c)=>a+c.length,0),buf=actx.createBuffer(1,Math.max(1,n),actx.sampleRate),d=new Float32Array(n);
   let o=0;ch.forEach(c=>{d.set(c,o);o+=c.length});buf.copyToChannel(d,0);
   return resampleWav(buf)}
-function sendGroq(key,wav){return new Promise((res,rej)=>{
-  const fd=new FormData();fd.append("file",wav,"a.wav");fd.append("model","whisper-large-v3");fd.append("language","th");
+function sendGroq(key,blob,name){return new Promise((res,rej)=>{
+  const fd=new FormData();fd.append("file",blob,name);fd.append("model","whisper-large-v3");fd.append("language","th");
   fd.append("response_format","verbose_json");fd.append("timestamp_granularities[]","word");
   const x=new XMLHttpRequest();x.open("POST","https://api.groq.com/openai/v1/audio/transcriptions");
   x.setRequestHeader("Authorization","Bearer "+key);
-  x.upload.onprogress=e=>e.lengthComputable&&setP(4,"อัปโหลดเสียง",e.loaded/e.total);
+  x.upload.onprogress=e=>e.lengthComputable&&setP(4,"อัปโหลด",e.loaded/e.total);
   x.upload.onload=()=>setP(5,"Groq กำลังถอดเสียง",null);
   x.onerror=()=>rej(new Error("เชื่อมต่อ Groq ไม่ได้ (เน็ตหรือถูกบล็อก)"));
-  x.onload=()=>x.status>=200&&x.status<300?res(JSON.parse(x.responseText)):rej(new Error(x.status+" "+x.responseText.slice(0,160)));
+  x.onload=()=>{if(x.status>=200&&x.status<300)res(JSON.parse(x.responseText));
+    else{const er=new Error(x.status+" "+x.responseText.slice(0,160));er.status=x.status;rej(er)}};
   x.send(fd)})}
 async function transcribe(){
   const key=$("key").value.trim();if(!key)return msg("ใส่ Groq API key ก่อน");if(!file)return msg("เลือกคลิปก่อน");
   ensureCtx();
   try{localStorage.setItem("gk",key)}catch(_){}
   try{
-    startP();let wav=null;
-    if(!forceCap){
-      try{
-        const mb=(file.size/1048576).toFixed(0);
-        setP(1,`อ่านไฟล์ (${mb} MB)`,0);
-        const buf=await readBuf(file,f=>setP(1,`อ่านไฟล์ (${mb} MB)`,f));
-        setP(2,"ถอดรหัสเสียงจากคลิป",null);
-        const dec=await Promise.race([decodeP(buf),new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")),25000))]);
-        wav=await resampleWav(dec);
-      }catch(e){forceCap=true}
+    startP();let j=null;
+    // 1) fastest: send the clip itself (no local audio work) when it fits Groq's 25 MB limit
+    if(file.size<=24*1048576){
+      try{setP(4,"อัปโหลดคลิปตรงๆ",0);j=await sendGroq(key,new File([file],"clip.mp4",{type:"video/mp4"}),"clip.mp4")}
+      catch(e){if([401,403,429].includes(e.status))throw e;j=null}
     }
-    if(!wav){
-      try{wav=await capture()}
-      catch(e){endP("อัดเสียงไม่สำเร็จ ("+(e.name||e.message)+") ถ้าเบราว์เซอร์ไม่ยอมเล่นคลิปเอง ให้แตะปุ่ม 2. ถอดเสียง อีกครั้ง");return}
+    // 2) otherwise extract audio here (decode, or silent real-time capture if Safari hangs)
+    if(!j){
+      let wav=null;
+      if(!forceCap){
+        try{
+          const mb=(file.size/1048576).toFixed(0);
+          setP(1,`อ่านไฟล์ (${mb} MB)`,0);
+          const buf=await readBuf(file,f=>setP(1,`อ่านไฟล์ (${mb} MB)`,f));
+          setP(2,"ถอดรหัสเสียงจากคลิป (รอสูงสุด 25 วิ)",null);
+          const dec=await Promise.race([decodeP(buf),new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")),25000))]);
+          wav=await resampleWav(dec);
+        }catch(e){forceCap=true}
+      }
+      if(!wav){
+        setP(2,"สลับเป็นอัดเสียงแบบเล่นจริง กำลังเริ่ม",0);
+        try{wav=await capture()}
+        catch(e){endP("อัดเสียงไม่สำเร็จ: "+(e.message||e.name)+" ถ้าเบราว์เซอร์ไม่ยอมเล่นคลิปเอง ให้แตะ 2. ถอดเสียง อีกครั้ง");return}
+      }
+      setP(4,"อัปโหลดเสียง",0);j=await sendGroq(key,wav,"a.wav");
     }
-    setP(4,"อัปโหลดเสียง",0);
-    const j=await sendGroq(key,wav);
     lines=toLines(toWords(j.words||[]));
     endP("เสร็จแล้ว: "+lines.length+" บรรทัด กดเล่นเพื่อดูซับ");
   }catch(e){endP("ผิดพลาด: "+(e.message||e))}}
