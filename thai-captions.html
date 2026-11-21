@@ -31,6 +31,10 @@ button.p{background:var(--acc);border-color:var(--acc);color:#fff}
 .row input[type=color]{width:44px;height:30px;border:none;background:none;padding:0}
 .btns{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
 #msg{color:var(--mut);font-size:14px;margin:8px 0;min-height:20px;word-break:break-word}
+#bar{display:none;height:8px;border-radius:4px;background:var(--line);overflow:hidden}
+#barf{height:100%;width:0;background:var(--acc);transition:width .3s}
+#barf.ind{background:linear-gradient(90deg,var(--acc) 0 40%,#ffb3c1 50% 60%,var(--acc) 70%);background-size:200% 100%;animation:sh 1.1s linear infinite}
+@keyframes sh{to{background-position:-200% 0}}
 #out video{width:100%;border-radius:12px;margin-top:8px}
 small{display:block;color:var(--mut);line-height:1.5}
 </style>
@@ -46,6 +50,7 @@ small{display:block;color:var(--mut);line-height:1.5}
   <div class="row"><label for="key">Groq API key</label><input id="key" type="password" autocomplete="off" placeholder="gsk_…"></div>
   <input id="file" type="file" accept="video/*" hidden>
   <div class="btns"><button id="pick" type="button">1. เลือกคลิป</button><button id="go" type="button" class="p">2. ถอดเสียง</button></div>
+  <div id="bar"><div id="barf"></div></div>
   <div id="msg">ตอนนี้เป็นซับตัวอย่าง เลือกคลิปเพื่อเริ่ม</div>
 </div>
 
@@ -83,10 +88,22 @@ function toWords(ch){let tx="";const ct=[];
     if(!g.segment.trim())continue;const a=ct[g.index],b=ct[g.index+g.segment.length-1];if(a&&b)out.push({w:g.segment,s:a.s,e:b.e})}
   return out}
 function toLines(ws){const L=[];let c=null;ws.forEach(o=>{if(!c||o.s-c.e>.7||c.t.length+o.w.length>18){c={s:o.s,e:o.e,t:"",words:[]};L.push(c)}c.words.push(o);c.t+=o.w;c.e=o.e});return L}
+// ---- progress UI (stage n of 5, real % where the browser reports it)
+const BASE=[0,10,40,45,70,100];let st={n:1,label:"",f:null},t0=0,tick=null;
+function upd(){const{n,label,f}=st,s=Math.round((performance.now()-t0)/1000),pct=BASE[n-1]+(f==null?0:f*(BASE[n]-BASE[n-1]));
+  $("bar").style.display="block";$("barf").style.width=pct+"%";$("barf").classList.toggle("ind",f==null);
+  msg(`ขั้น ${n}/5 ${label}${f!=null?" "+Math.round(f*100)+"%":" (รอสักครู่)"} · ผ่านไป ${s} วิ`)}
+function setP(n,label,f){st={n,label,f:f==null?null:f};upd()}
+function startP(){t0=performance.now();clearInterval(tick);tick=setInterval(upd,500)}
+function endP(m){clearInterval(tick);$("bar").style.display="none";msg(m)}
+const readBuf=(f,cb)=>new Promise((res,rej)=>{const r=new FileReader();r.onprogress=e=>e.lengthComputable&&cb(e.loaded/e.total);r.onload=()=>res(r.result);r.onerror=()=>rej(r.error);r.readAsArrayBuffer(f)});
 // ---- video -> 16 kHz mono WAV
-async function toWav(f){
+async function toWav(buf){
   const AC=window.AudioContext||window.webkitAudioContext,ac=new AC();
-  const dec=await new Promise((res,rej)=>ac.decodeAudioData(await_buf,res,rej));ac.close();
+  setP(2,"ถอดรหัสเสียงจากคลิป",null);
+  const dec=await Promise.race([new Promise((res,rej)=>ac.decodeAudioData(buf,res,rej)),
+    new Promise((_,rej)=>setTimeout(()=>rej(new Error("ดึงเสียงนานเกิน 2 นาที ลองคลิปที่สั้นหรือไฟล์เล็กกว่านี้")),120000))]);
+  ac.close();setP(3,"ย่อเสียง",null);
   const OAC=window.OfflineAudioContext||window.webkitOfflineAudioContext;
   const off=new OAC(1,Math.max(1,Math.ceil(dec.duration*16000)),16000),s=off.createBufferSource();
   s.buffer=dec;s.connect(off.destination);s.start();
@@ -96,20 +113,28 @@ async function toWav(f){
   o.setUint32(24,16000,true);o.setUint32(28,32000,true);o.setUint16(32,2,true);o.setUint16(34,16,true);ws(36,"data");o.setUint32(40,n*2,true);
   for(let i=0;i<n;i++){const v=Math.max(-1,Math.min(1,d[i]));o.setInt16(44+i*2,v<0?v*32768:v*32767,true)}
   return new Blob([o],{type:"audio/wav"})}
-let await_buf=null;
+function sendGroq(key,wav){return new Promise((res,rej)=>{
+  const fd=new FormData();fd.append("file",wav,"a.wav");fd.append("model","whisper-large-v3");fd.append("language","th");
+  fd.append("response_format","verbose_json");fd.append("timestamp_granularities[]","word");
+  const x=new XMLHttpRequest();x.open("POST","https://api.groq.com/openai/v1/audio/transcriptions");
+  x.setRequestHeader("Authorization","Bearer "+key);
+  x.upload.onprogress=e=>e.lengthComputable&&setP(4,"อัปโหลดเสียง",e.loaded/e.total);
+  x.upload.onload=()=>setP(5,"Groq กำลังถอดเสียง",null);
+  x.onerror=()=>rej(new Error("เชื่อมต่อ Groq ไม่ได้ (เน็ตหรือถูกบล็อก)"));
+  x.onload=()=>x.status>=200&&x.status<300?res(JSON.parse(x.responseText)):rej(new Error(x.status+" "+x.responseText.slice(0,160)));
+  x.send(fd)})}
 async function transcribe(){
   const key=$("key").value.trim();if(!key)return msg("ใส่ Groq API key ก่อน");if(!file)return msg("เลือกคลิปก่อน");
   try{localStorage.setItem("gk",key)}catch(_){}
   try{
-    msg("กำลังดึงเสียง…");await_buf=await file.arrayBuffer();const wav=await toWav(file);await_buf=null;
-    msg("กำลังถอดเสียง…");
-    const fd=new FormData();fd.append("file",wav,"a.wav");fd.append("model","whisper-large-v3");fd.append("language","th");
-    fd.append("response_format","verbose_json");fd.append("timestamp_granularities[]","word");
-    const r=await fetch("https://api.groq.com/openai/v1/audio/transcriptions",{method:"POST",headers:{Authorization:"Bearer "+key},body:fd});
-    if(!r.ok)throw new Error(r.status+" "+(await r.text()).slice(0,160));
-    const j=await r.json();lines=toLines(toWords(j.words||[]));
-    msg("เสร็จแล้ว: "+lines.length+" บรรทัด กดเล่นเพื่อดูซับ");
-  }catch(e){msg("ผิดพลาด: "+(e.message||e))}}
+    startP();setP(1,`อ่านไฟล์ (${(file.size/1048576).toFixed(0)} MB)`,0);
+    const buf=await readBuf(file,f=>setP(1,`อ่านไฟล์ (${(file.size/1048576).toFixed(0)} MB)`,f));
+    const wav=await toWav(buf);
+    setP(4,"อัปโหลดเสียง",0);
+    const j=await sendGroq(key,wav);
+    lines=toLines(toWords(j.words||[]));
+    endP("เสร็จแล้ว: "+lines.length+" บรรทัด กดเล่นเพื่อดูซับ");
+  }catch(e){endP("ผิดพลาด: "+(e.message||e))}}
 // ---- drawing
 const ease=x=>{x=Math.min(1,Math.max(0,x));const c=1.70158;return 1+(c+1)*Math.pow(x-1,3)+c*Math.pow(x-1,2)};
 const fnt=s=>`700 ${s}px "${S.font}", sans-serif`;
