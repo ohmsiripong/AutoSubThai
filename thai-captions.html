@@ -22,6 +22,9 @@ canvas{display:block;width:auto;height:auto;max-width:100%;max-height:36vh;max-h
 #top.big .stage canvas{max-height:62vh;max-height:62dvh}
 #top .stage.rec canvas{max-height:20vh;max-height:20dvh}
 body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);background:var(--bg);z-index:40}
+.card textarea{width:100%;font:inherit;padding:8px;border-radius:8px;background:var(--bg);color:var(--fg);border:1px solid var(--line)}
+.card summary{cursor:pointer;color:var(--mut);font-size:14px;margin:6px 0}
+.ln input.warn{border-color:#ff9f0a;background:rgba(255,159,10,.14)}
 .ln{display:flex;gap:8px;margin:6px 0}
 .ln input{flex:1;min-width:0;font:inherit;padding:8px;border-radius:8px;background:var(--bg);color:var(--fg);border:1px solid var(--line)}
 .ln button{padding:8px 10px;white-space:nowrap}
@@ -51,7 +54,7 @@ small{display:block;color:var(--mut);line-height:1.5}
 </head>
 <body>
 <main>
-<h1>Thai Captions <span style="font-size:12px;color:var(--mut);font-weight:400">v14</span></h1>
+<h1>Thai Captions <span style="font-size:12px;color:var(--mut);font-weight:400">v15</span></h1>
 <div id="top">
 <div class="stage" id="stage"><video id="vid" playsinline></video><canvas id="cv"></canvas></div>
 <div class="bar"><button id="pl" type="button">▶ เล่น</button><input id="sc" type="range" min="0" max="1000" value="0" aria-label="เลื่อนเวลา"><button id="zm" type="button">ขยาย</button></div>
@@ -80,7 +83,13 @@ small{display:block;color:var(--mut);line-height:1.5}
   <div class="row"><label for="c2">สีเน้นคำที่พูด</label><input id="c2" type="color" value="#ffd400"></div>
   <div class="row"><label for="st">ขอบดำ</label><input id="st" type="checkbox" checked></div>
 </div>
-<div class="card" id="edcard" style="display:none"><div style="color:var(--mut);font-size:14px">แตะ ▶ เพื่อข้ามไปบรรทัดนั้น แก้ข้อความแล้วกดเสร็จบนคีย์บอร์ด</div><div id="ed"></div></div>
+<div class="card" id="edcard" style="display:none"><div style="color:var(--mut);font-size:14px">แตะ ▶ เพื่อข้ามไปบรรทัดนั้น แก้ข้อความแล้วกดเสร็จบนคีย์บอร์ด ช่องสีส้มคือข้อความที่น่าสงสัย</div>
+  <div class="btns" style="margin:8px 0"><button id="ai" type="button" class="p">✨ ตรวจคำผิด / จัดวรรค (AI)</button><button id="rl" type="button">จัดบรรทัดใหม่</button></div>
+  <div id="aimsg" style="color:var(--mut);font-size:14px;min-height:18px;margin-bottom:6px"></div>
+  <details><summary>คำศัพท์เฉพาะ (กันไม่ให้ตัดคำ / แก้คำผิดประจำ)</summary>
+    <textarea id="gl" rows="4" placeholder="ท่านประธาน&#10;ใจฟู&#10;ประทาน=ประธาน"></textarea>
+    <small>บรรทัดละ 1 คำ คำธรรมดา = ห้ามตัดกลางคำ  ผิด=ถูก = แทนที่คำผิดให้อัตโนมัติ (กด จัดบรรทัดใหม่ เพื่อใช้)</small></details>
+  <div id="ed"></div></div>
 <div class="card"><div class="row"><label for="res">ความละเอียดส่งออก</label><select id="res"><option value="1920">1080p (คมสุด)</option><option value="1280">720p (เบากว่า)</option></select></div></div>
 <button id="ex" type="button" class="p" style="width:100%">3. ส่งออกคลิปพร้อมซับ</button>
 <div id="out"></div>
@@ -153,22 +162,97 @@ async function capture(){
 // ---- Thai words, even time spread, and building lines from Whisper segments (more reliable than raw Thai word stamps)
 const segWords=t=>window.Intl&&Intl.Segmenter?[...new Intl.Segmenter("th",{granularity:"word"}).segment(t)].map(g=>g.segment).filter(x=>x.trim()):t.split(/\s+/).filter(Boolean);
 function spread(arr,a,b){const tot=arr.reduce((s,w)=>s+w.length,0)||1;let x=a;return arr.map(w=>{const d=(b-a)*w.length/tot,o={w,s:x,e:x+d};x+=d;return o})}
-function fromResult(j){
-  const W=j.words||[],G=j.segments||[];if(!G.length)return toLines(toWords(W));
-  const out=[];
-  G.forEach(sg=>{
-    const ins=W.filter(w=>w.start>=sg.start-.15&&w.end<=sg.end+.15);let a=sg.start,b=sg.end;
+// ---- Thai-aware line layout: keep compounds/titles together, tail particles attached, no one-word orphans
+const TAIL=new Set(["ครับ","ค่ะ","คะ","นะ","น่ะ","จ้ะ","จ้า","ล่ะ","สิ","แหละ","เลย","ครับผม","นะครับ","นะคะ","ๆ","ด้วย","อ่ะ","เนอะ","ไหม","มั้ย","หรอก"]);
+const PREF=new Set(["ท่าน","คุณ","นาย","นาง","นางสาว","ลุง","ป้า","น้า","อา","พี่","น้อง","ครู","หมอ","พ่อ","แม่","ปู่","ย่า","ตา","ยาย","ผู้","เจ๊","เฮีย"]);
+const CONJ=new Set(["และ","แต่","แล้ว","เพราะ","ถ้า","เมื่อ","ที่","ซึ่ง","หรือ","ก็","จึง","โดย","ว่า","เพื่อ","จน","ตอน"]);
+const ENDBAD=new Set(["ไม่","จะ","ที่","ซึ่ง","และ","หรือ","ของ","ใน","กับ","แก่","ต่อ","เพื่อ","โดย","ถ้า","เมื่อ","ก็","ว่า","แต่","เพราะ","ให้","อย่าง","จาก","ตาม","แล้ว","ยัง","ได้ทำ","คือ"]);
+const BUILTIN=["หลังจาก","ก่อนหน้า","อย่างเดียว","เพราะว่า","ในที่สุด","ตลอดเวลา","ทั้งหมด","ทุกคน","ทุกวัน","ขอบคุณ","เรียบร้อย","คนขับรถ","ผู้ใหญ่","เด็กๆ","เดินนำ","ไม่รอ","เดินกลับ"];
+let segs=[],editedAny=false;
+function glossary(){const keep=[],rep=[];
+  (($("gl")&&$("gl").value)||"").split(/\r?\n/).forEach(l=>{l=l.trim();if(!l)return;const k=l.indexOf("=");
+    if(k>0)rep.push([l.slice(0,k).trim(),l.slice(k+1).trim()]);else keep.push(l)});
+  rep.forEach(r=>{if(r[1])keep.push(r[1])});BUILTIN.forEach(t=>keep.push(t));keep.sort((a,b)=>b.length-a.length);return{keep,rep}}
+// words with timing spread over [a,b]; pe marks a phrase end (2 = AI "|", 1 = a space Whisper left in the text)
+function phraseWords(text,a,b){const all=[];
+  text.split("|").forEach((chunk,ci,arr)=>{const parts=chunk.split(/\s+/).filter(Boolean);
+    parts.forEach((p,pi)=>{const w=segWords(p);w.forEach((x,i)=>all.push({w:x,pe:i===w.length-1?((pi===parts.length-1&&ci<arr.length-1)?2:1):0}))})});
+  const sp=spread(all.map(x=>x.w),a,b);sp.forEach((o,i)=>o.pe=all[i].pe);return sp}
+function glue(ws,keep){const U=[];
+  for(let i=0;i<ws.length;i++){let g=[ws[i]],hit=false;
+    for(const t of keep){let k=i,acc="";while(k<ws.length&&acc.length<t.length){acc+=ws[k].w;k++}if(acc===t&&k-i>1){g=ws.slice(i,k);i=k-1;hit=true;break}}
+    if(!hit&&PREF.has(ws[i].w)&&i+1<ws.length&&!TAIL.has(ws[i+1].w)){g=[ws[i],ws[i+1]];i++}
+    while(i+1<ws.length&&TAIL.has(ws[i+1].w)){g.push(ws[i+1]);i++}
+    const text=g.map(x=>x.w).join("");U.push({ws:g,text,len:text.length,s:g[0].s,e:g[g.length-1].e,pe:g[g.length-1].pe})}
+  return U}
+function breakLines(U,maxC=20,target=13){
+  const n=U.length,best=new Array(n+1).fill(1e9),prev=new Array(n+1).fill(-1),pre=[0];best[0]=0;U.forEach(u=>pre.push(pre[pre.length-1]+u.len));
+  for(let j=1;j<=n;j++)for(let i=j-1;i>=0;i--){
+    const len=pre[j]-pre[i];if(len>maxC&&j-i>1)break;
+    let c=Math.pow((len-target)/target,2)*10;if(len<6&&n>1)c+=(6-len)*2.5;
+    if(j<n){const a=U[j-1],b=U[j];
+      if(a.len<=2||b.len<=2)c+=5;
+      if(ENDBAD.has(a.ws[a.ws.length-1].w))c+=6;                 // do not end a line on "ไม่", "ที่", "และ"…
+      c-=a.pe===2?8:a.pe===1?3:0;
+      if(CONJ.has(b.text))c-=3;
+      if(/(ครับ|ค่ะ|คะ|นะ)$/.test(a.text))c-=4;
+      if(b.s-a.e>.3)c-=5}
+    if(best[i]+c<best[j]){best[j]=best[i]+c;prev[j]=i}}
+  const out=[];let j=n;while(j>0){const i=prev[j];out.push(U.slice(i,j));j=i}return out.reverse()}
+function mergeOrphans(L){const join=(a,b)=>({s:a.s,e:b.e,t:a.t+b.t,words:a.words.concat(b.words)});let ch=true;
+  while(ch){ch=false;for(let i=0;i<L.length;i++){const c=L[i];if(c.t.length>=6)continue;const p=L[i-1],n=L[i+1];
+    if(p&&c.s-p.e<.6&&p.t.length+c.t.length<=24){L.splice(i-1,2,join(p,c));ch=true;break}
+    if(n&&n.s-c.e<.6&&n.t.length+c.t.length<=24){L.splice(i,2,join(c,n));ch=true;break}}}
+  return L}
+function layoutSegs(sg){const gl=glossary(),out=[];
+  sg.forEach(g=>{let t=g.text;gl.rep.forEach(([a,b])=>{if(a)t=t.split(a).join(b)});
+    const ws=phraseWords(t,g.a,g.b);if(!ws.length)return;
+    breakLines(glue(ws,gl.keep)).forEach(us=>{const w=[].concat(...us.map(u=>u.ws));
+      out.push({s:w[0].s,e:w[w.length-1].e,t:w.map(x=>x.w).join(""),words:w.map(x=>({w:x.w,s:x.s,e:x.e}))})})});
+  return mergeOrphans(out)}
+function foldTiny(g){const out=[];g.forEach(x=>{const p=out[out.length-1];
+  if(p&&x.text.replace(/\s/g,"").length<=6&&x.a-p.b<.5){p.text+=x.text;p.b=x.b}else out.push({a:x.a,b:x.b,text:x.text})});return out}
+function buildSegs(j){const W=j.words||[],G=j.segments||[];
+  if(!G.length)return foldTiny(toLines(toWords(W)).map(l=>({a:l.s,b:l.e,text:l.t})));
+  return foldTiny(G.map(sg=>{const ins=W.filter(w=>w.start>=sg.start-.15&&w.end<=sg.end+.15);let a=sg.start,b=sg.end;
     if(ins.length){a=Math.max(sg.start,ins[0].start);b=Math.min(sg.end,ins[ins.length-1].end)}
-    if(b-a<.2){a=sg.start;b=sg.end}
-    toLines(spread(segWords(sg.text||""),a,b)).forEach(l=>out.push(l))});
-  return out}
+    if(b-a<.2){a=sg.start;b=sg.end}return{a,b,text:(sg.text||"").trim()}}).filter(g=>g.text))}
+function fromResult(j){segs=buildSegs(j);editedAny=false;return layoutSegs(segs)}
+// ---- AI proofreading through Groq chat (fixes misheard words, drops gibberish, adds phrase breaks "|")
+const AI_MODELS=["llama-3.3-70b-versatile","openai/gpt-oss-120b","llama-3.1-8b-instant"];
+function parseAi(t){const m=[];t.replace(/```[a-z]*/gi,"").split(/\r?\n/).forEach(l=>{const x=l.match(/^\s*(\d+)[\s:：.)\-]+(.+?)\s*$/);if(x)m[+x[1]]=x[2]});return m}
+async function aiFix(){
+  const am=t=>$("aimsg").textContent=t,key=$("key").value.trim();
+  if(!key)return am("ใส่ Groq API key ก่อน (ช่องด้านบน)");if(!segs.length)return am("ต้องถอดเสียงก่อน");
+  if(editedAny&&!confirm("ข้อความที่แก้ด้วยมือจะถูกแทนที่ด้วยผลจาก AI ทำต่อไหม?"))return;
+  const gl=glossary(),extra=(gl.keep.length?"\nKeep these terms exactly and never split them: "+gl.keep.join(", ")+".":"")+(gl.rep.length?"\nAlways correct: "+gl.rep.map(r=>r[0]+" -> "+r[1]).join(", ")+".":"");
+  const sys="You proofread Thai speech-to-text transcripts used as video subtitles. For every numbered line: (1) fix words the recogniser clearly misheard or misspelled, using the surrounding context; (2) remove stray Latin-letter gibberish or noise that is clearly a recognition error; (3) insert | at natural phrase breaks, about 8-18 Thai characters per phrase, never splitting a compound word or a title plus name (for example keep ท่านประธาน and ลุงยาม together), and keep tail particles such as ครับ ค่ะ นะ attached to the phrase before them. Never move words from one numbered line to another. Do not add, summarise, translate or reorder content. If unsure, leave the text unchanged. Example: 0\tคุณลุงยามนั่งอยู่หน้าประตูครับ -> 0\tคุณลุงยาม|นั่งอยู่หน้าประตูครับ. Reply with exactly one line per input line in the form number<TAB>text and nothing else."+extra;
+  const input=segs.map((g,i)=>i+"\t"+g.text.replace(/\|/g,"")).join("\n");
+  let out=null,err="";const t0=performance.now(),iv=setInterval(()=>am("AI กำลังตรวจคำผิดและจัดวรรค… "+Math.round((performance.now()-t0)/1000)+" วิ"),500);
+  try{
+    for(const model of AI_MODELS){
+      try{const r=await fetch("https://api.groq.com/openai/v1/chat/completions",{method:"POST",headers:{Authorization:"Bearer "+key,"Content-Type":"application/json"},
+          body:JSON.stringify({model,temperature:0,messages:[{role:"system",content:sys},{role:"user",content:input}]})});
+        if(r.status===401||r.status===403){err="คีย์ไม่ถูกต้อง ("+r.status+")";break}
+        if(r.status===429){err="ใช้เกินโควตา (429) รอสักครู่แล้วลองใหม่";break}
+        if(!r.ok){err=model+" ตอบ "+r.status;continue}
+        const j=await r.json();out=j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content;if(out)break}
+      catch(e){err=e.message||String(e)}}
+  }finally{clearInterval(iv)}
+  if(!out)return am("ใช้ AI ไม่ได้: "+err+" (ยังใช้การจัดวรรคอัตโนมัติแบบเดิมอยู่)");
+  const fx=parseAi(out);let n=0;
+  fx.forEach((txt,i)=>{if(!segs[i])return;const o=segs[i].text.replace(/[|\s]/g,""),c=txt.replace(/[|\s]/g,""),r=c.length/Math.max(1,o.length);
+    if(r<.6||r>1.5)return;                                   // ignore answers that look like rewrites
+    if(c!==o||txt.includes("|")){segs[i].text=txt;n++}});
+  lines=layoutSegs(segs);editedAny=false;renderEditor();
+  am(n?`AI ตรวจแล้ว ปรับ ${n} จาก ${segs.length} ช่วง ดูผลและแก้เพิ่มได้ในรายการด้านล่าง`:"AI ไม่พบจุดที่ต้องแก้")}
 const fmt=t=>Math.floor(t/60)+":"+String(Math.floor(t%60)).padStart(2,"0");
 function renderEditor(){
   const ed=$("ed");ed.innerHTML="";$("edcard").style.display=lines.length&&hasVid?"block":"none";
   lines.forEach(L=>{const r=document.createElement("div");r.className="ln";
     const b=document.createElement("button");b.type="button";b.textContent="▶ "+fmt(L.s);b.onclick=()=>seekTo(L.s);
-    const i=document.createElement("input");i.value=L.t;
-    i.onchange=()=>{const w=spread(segWords(i.value),L.s,L.e);L.ch=null;L.words=w;L.t=w.map(x=>x.w).join("")};
+    const i=document.createElement("input");i.value=L.t;const chk=()=>{i.className=/[A-Za-z]{3,}/.test(i.value)?"warn":""};chk();
+    i.onchange=()=>{editedAny=true;chk();const w=spread(segWords(i.value),L.s,L.e);L.ch=null;L.words=w;L.t=w.map(x=>x.w).join("")};
     r.append(b,i);ed.append(r)})}
 // ---- pull the audio track out of an MP4/MOV without decoding anything (tiny m4a, instant)
 const rd=async(f,a,b)=>new DataView(await f.slice(a,b).arrayBuffer());
@@ -341,6 +425,10 @@ vid.addEventListener("playing",()=>{if(recSess||healing)return;const t0=vid.curr
 vid.addEventListener("ended",()=>{if(!recSess)setTimeout(()=>heal(0,false),150)});
 // ---- controls
 const lbl=()=>$("pl").textContent=(hasVid?!vid.paused:playing)?"⏸ หยุด":"▶ เล่น";
+try{$("gl").value=localStorage.getItem("gd")||""}catch(_){}
+$("gl").oninput=()=>{try{localStorage.setItem("gd",$("gl").value)}catch(_){}};
+$("ai").onclick=aiFix;
+$("rl").onclick=()=>{if(!segs.length)return;if(editedAny&&!confirm("ข้อความที่แก้ด้วยมือจะถูกแทนที่ ทำต่อไหม?"))return;lines=layoutSegs(segs);editedAny=false;renderEditor();$("aimsg").textContent="จัดบรรทัดใหม่แล้ว"};
 $("zm").onclick=()=>{const t=$("top");t.classList.toggle("big");$("zm").textContent=t.classList.contains("big")?"ย่อ":"ขยาย"};
 $("pl").onclick=()=>{if(hasVid){if(vid.paused){if(vid.ended||(vid.duration&&vid.currentTime>=vid.duration-.05))vid.currentTime=0;vid.play().catch(()=>{})}else vid.pause()}else playing=!playing;lbl()};
 vid.onplay=vid.onpause=vid.onended=lbl;
