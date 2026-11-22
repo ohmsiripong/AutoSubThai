@@ -47,10 +47,11 @@ small{display:block;color:var(--mut);line-height:1.5}
 </head>
 <body>
 <main>
-<h1>Thai Captions <span style="font-size:12px;color:var(--mut);font-weight:400">v8</span></h1>
+<h1>Thai Captions <span style="font-size:12px;color:var(--mut);font-weight:400">v9</span></h1>
 <div class="stage" id="stage"><video id="vid" playsinline></video><canvas id="cv"></canvas></div>
 <div class="bar"><button id="pl" type="button">▶ เล่น</button><input id="sc" type="range" min="0" max="1000" value="0" aria-label="เลื่อนเวลา"></div>
 
+<div id="dbg" style="font:11px ui-monospace,Menlo,monospace;color:var(--mut);word-break:break-all;margin:-4px 0 10px"></div>
 <div class="card">
   <div class="row"><label for="key">Groq API key</label><input id="key" type="password" autocomplete="off" placeholder="gsk_…"></div>
   <input id="file" type="file" accept="video/*" hidden>
@@ -270,7 +271,8 @@ function layout(L,fs){setFont(fs);let ws=L.words.map(o=>ctx.measureText(o.w).wid
   if(tot>mx){const k=mx/tot;fs*=k;ws=ws.map(w=>w*k);tot=mx;setFont(fs)}
   let x=(W-tot)/2;return ws.map(w=>{const c=x+w/2;x+=w;return{c,w}})}
 function draw(t){
-  if(hasVid&&vid.videoWidth)ctx.drawImage(vid,0,0,W,H);
+  ctx.clearRect(0,0,W,H);
+  if(hasVid&&vid.videoWidth){ctx.drawImage(vid,0,0,W,H);if(frames%30===0){try{pxState=ctx.getImageData(4,4,1,1).data[3]>0?"ok":"blank"}catch(e){pxState="err"}}}
   else{const g=ctx.createLinearGradient(0,0,W,H);g.addColorStop(0,"#2b1f4a");g.addColorStop(1,"#0e3b4f");ctx.fillStyle=g;ctx.fillRect(0,0,W,H)}
   const k=W/540,fs=S.size*k,y=H*S.pos/100,L=lines.find(l=>t>=l.s-.12&&t<=l.e+.35);if(!L)return;
   if(S.style==="pop"){
@@ -286,16 +288,27 @@ function draw(t){
     L.words.forEach((o,i)=>{if(t<o.s)return;const q=Math.min(1,(t-o.s)/.28),e=ease(q),cur=t<=o.e,d=i%2?1:-1;
       txt(o.w,P[i].c+d*(1-e)*40*k,y-d*(1-e)*60*k,cur?S.hi:S.color,{sc:(cur?1.18:1)*(1.6-.6*e),rot:d*(1-e)*.5,al:Math.min(1,q*2)})});
   }}
-let last=performance.now(),lastDraw=0,frames=0,errMsg="";
+let last=performance.now(),lastDraw=0,frames=0,errMsg="",pxState="?",dMax=0,mt=-1,mtAt=0,wc0=0,rvId=0;
+function arm(){if(!vid.requestVideoFrameCallback)return;const id=++rvId;
+  const cb=(n,m)=>{if(id!==rvId)return;mt=m.mediaTime;mtAt=performance.now();step(performance.now());vid.requestVideoFrameCallback(cb)};
+  vid.requestVideoFrameCallback(cb)}
+// best available playback time: frame time from the decoder, else currentTime, else a wall clock started when playback began
+function curT(){const ct=vid.currentTime,now=performance.now();
+  if(!vid.paused&&mt>=0&&now-mtAt<400)return mt;
+  if(!vid.paused&&ct<.05&&wc0&&now-wc0>600)return (now-wc0)/1000;
+  return ct}
+vid.addEventListener("playing",()=>{wc0=performance.now()-vid.currentTime*1000;arm()});
+vid.addEventListener("seeked",arm);vid.addEventListener("timeupdate",()=>step(performance.now()));
 function step(n){
   try{
     const dt=Math.min(.1,(n-last)/1000);last=n;let t;
-    if(hasVid){t=vid.currentTime;if(vid.duration)$("sc").value=t/vid.duration*1000}
+    if(hasVid){t=curT();const d=vid.duration;if(d&&isFinite(d))$("sc").value=t/d*1000}
     else{if(playing){demoT+=dt;if(demoT>DUR)demoT=0}t=demoT;$("sc").value=t/DUR*1000}
-    draw(t-S.off);frames++;lastDraw=performance.now();
+    const t0=performance.now();draw(t-S.off);dMax=Math.max(dMax*.98,performance.now()-t0);frames++;lastDraw=performance.now();
   }catch(e){errMsg=String(e&&e.message||e)}}
 function frame(n){requestAnimationFrame(frame);step(n)}
-setInterval(()=>{if(performance.now()-lastDraw>250)step(performance.now())},120); // keeps drawing even if rAF stalls
+setInterval(()=>{if(performance.now()-lastDraw>250)step(performance.now())},120);
+setInterval(()=>{$("dbg").textContent=`t=${curT().toFixed(2)} ct=${vid.currentTime.toFixed(2)} mt=${mt.toFixed(2)} dur=${(vid.duration||0).toFixed(1)} ${vid.paused?"paused":"playing"} rs=${vid.readyState} draws=${frames} slow=${dMax.toFixed(0)}ms px=${pxState}${errMsg?" ERR "+errMsg:""}`},300);
 // ---- controls
 const lbl=()=>$("pl").textContent=(hasVid?!vid.paused:playing)?"⏸ หยุด":"▶ เล่น";
 $("pl").onclick=()=>{if(hasVid){if(vid.paused){if(vid.ended||(vid.duration&&vid.currentTime>=vid.duration-.05))vid.currentTime=0;vid.play().catch(()=>{})}else vid.pause()}else playing=!playing;lbl()};
@@ -303,7 +316,7 @@ vid.onplay=vid.onpause=vid.onended=lbl;
 $("sc").oninput=e=>{const v=e.target.value/1000;if(hasVid)vid.currentTime=v*(vid.duration||0);else demoT=v*DUR};
 $("pick").onclick=()=>$("file").click();
 $("file").onchange=e=>{file=e.target.files[0];if(!file)return;hasVid=false;vid.src=URL.createObjectURL(file);lines=[];msg("กำลังโหลดคลิป…")};
-vid.onloadedmetadata=()=>{const s=Math.min(1,960/Math.max(vid.videoWidth,vid.videoHeight));W=Math.round(vid.videoWidth*s);H=Math.round(vid.videoHeight*s);cv.width=W;cv.height=H;hasVid=true;vid.currentTime=.01;lbl();msg("โหลดแล้ว กด 2. ถอดเสียง")};
+vid.onloadedmetadata=()=>{const s=Math.min(1,960/Math.max(vid.videoWidth,vid.videoHeight));W=Math.round(vid.videoWidth*s);H=Math.round(vid.videoHeight*s);cv.width=W;cv.height=H;hasVid=true;vid.currentTime=.01;arm();lbl();msg("โหลดแล้ว กด 2. ถอดเสียง")};
 $("go").onclick=transcribe;
 document.querySelectorAll("#seg button").forEach(b=>b.onclick=()=>{S.style=b.dataset.s;document.querySelectorAll("#seg button").forEach(x=>x.setAttribute("aria-pressed",x===b))});
 $("ft").onchange=e=>{S.font=e.target.value;try{document.fonts.load(fnt(40),"กขค")}catch(_){}};
@@ -341,8 +354,8 @@ $("ex").onclick=async()=>{
     if(abuf){bs=actx.createBufferSource();bs.buffer=abuf;bs.connect(dst);
       vid.addEventListener("playing",()=>{try{bs.start(0,Math.min(vid.currentTime,abuf.duration-.01))}catch(_){}},{once:true})}
     rec.start();vid.play();
-    iv=setInterval(()=>{const d=vid.duration||0,p=d?vid.currentTime/d:0;
-      msg(`กำลังอัด ${Math.round(p*100)}% (${vid.currentTime.toFixed(1)}/${d.toFixed(1)} วิ) เลื่อนหน้าได้ ภาพเล็กด้านขวาบนคือสิ่งที่กำลังอัด`+(abuf?"":" · ไม่มีเสียง")+(errMsg?" · ข้อผิดพลาด: "+errMsg:""))},300);
+    iv=setInterval(()=>{const d=vid.duration||0,ct=curT(),p=d?ct/d:0;
+      msg(`กำลังอัด ${Math.round(p*100)}% (${ct.toFixed(1)}/${d.toFixed(1)} วิ) เลื่อนหน้าได้ ภาพเล็กด้านขวาบนคือสิ่งที่กำลังอัด`+(abuf?"":" · ไม่มีเสียง")+(errMsg?" · ข้อผิดพลาด: "+errMsg:""))},300);
     vid.addEventListener("ended",()=>{if(!cancelled)rec.stop()},{once:true});
   }catch(e){done();msg("ส่งออกไม่สำเร็จ: "+(e.message||e))}};
 try{$("key").value=localStorage.getItem("gk")||""}catch(_){}
