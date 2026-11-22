@@ -46,7 +46,7 @@ small{display:block;color:var(--mut);line-height:1.5}
 </head>
 <body>
 <main>
-<h1>Thai Captions <span style="font-size:12px;color:var(--mut);font-weight:400">v5</span></h1>
+<h1>Thai Captions <span style="font-size:12px;color:var(--mut);font-weight:400">v7</span></h1>
 <div class="stage" id="stage"><video id="vid" playsinline></video><canvas id="cv"></canvas></div>
 <div class="bar"><button id="pl" type="button">▶ เล่น</button><input id="sc" type="range" min="0" max="1000" value="0" aria-label="เลื่อนเวลา"></div>
 
@@ -160,9 +160,53 @@ function renderEditor(){
     const i=document.createElement("input");i.value=L.t;
     i.onchange=()=>{const w=spread(segWords(i.value),L.s,L.e);L.words=w;L.t=w.map(x=>x.w).join("")};
     r.append(b,i);ed.append(r)})}
-function sendGroq(key,blob,name){return new Promise((res,rej)=>{
+// ---- pull the audio track out of an MP4/MOV without decoding anything (tiny m4a, instant)
+const rd=async(f,a,b)=>new DataView(await f.slice(a,b).arrayBuffer());
+const cc=(u,o)=>String.fromCharCode(u[o],u[o+1],u[o+2],u[o+3]);
+function kids(u,s,e){const out=[],d=new DataView(u.buffer,u.byteOffset,u.byteLength);let o=s;
+  while(o+8<=e){let sz=d.getUint32(o),hs=8;const ty=cc(u,o+4);
+    if(sz===1){sz=Number(d.getBigUint64(o+8));hs=16}else if(sz===0)sz=e-o;
+    if(sz<hs||o+sz>e)break;out.push({ty,s:o,e:o+sz,b:o+hs});o+=sz}return out}
+const find=(u,bx,ty)=>kids(u,bx.b,bx.e).find(k=>k.ty===ty);
+const mkbox=(ty,...ps)=>{const n=ps.reduce((a,p)=>a+p.length,0),u=new Uint8Array(8+n);new DataView(u.buffer).setUint32(0,8+n);
+  for(let i=0;i<4;i++)u[4+i]=ty.charCodeAt(i);let o=8;ps.forEach(p=>{u.set(p,o);o+=p.length});return u};
+async function extractAudioM4a(f){
+  let o=0,mv=null;
+  while(o<f.size){const h=await rd(f,o,Math.min(o+16,f.size));let sz=h.getUint32(0);
+    const ty=String.fromCharCode(h.getUint8(4),h.getUint8(5),h.getUint8(6),h.getUint8(7));
+    if(sz===1)sz=Number(h.getBigUint64(8));else if(sz===0)sz=f.size-o;
+    if(sz<8)throw new Error("ไฟล์ไม่ใช่ MP4/MOV");
+    if(ty==="moov"){mv=new Uint8Array(await f.slice(o,o+sz).arrayBuffer());break}o+=sz}
+  if(!mv)throw new Error("ไม่พบข้อมูลคลิป (moov)");
+  const dv=new DataView(mv.buffer,mv.byteOffset,mv.byteLength),root={b:8,e:mv.length};
+  let tr=null;
+  for(const t of kids(mv,8,mv.length).filter(k=>k.ty==="trak")){
+    const md=find(mv,t,"mdia"),hd=md&&find(mv,md,"hdlr");
+    if(hd&&cc(mv,hd.b+8)==="soun"){tr=t;break}}
+  if(!tr)throw new Error("คลิปนี้ไม่มีแทร็กเสียง");
+  const md=find(mv,tr,"mdia"),sb=find(mv,find(mv,md,"minf"),"stbl");
+  const stsc=find(mv,sb,"stsc"),stsz=find(mv,sb,"stsz"),co=find(mv,sb,"stco")||find(mv,sb,"co64");
+  if(!stsc||!stsz||!co)throw new Error("อ่านตารางเสียงไม่ได้");
+  const is64=co.ty==="co64",nCh=dv.getUint32(co.b+4),offs=[];
+  for(let i=0;i<nCh;i++)offs.push(is64?Number(dv.getBigUint64(co.b+8+i*8)):dv.getUint32(co.b+8+i*4));
+  const nSc=dv.getUint32(stsc.b+4),sc=[];
+  for(let i=0;i<nSc;i++)sc.push({f:dv.getUint32(stsc.b+8+i*12),n:dv.getUint32(stsc.b+12+i*12)});
+  const fixed=dv.getUint32(stsz.b+4),ssz=i=>fixed||dv.getUint32(stsz.b+12+i*4);
+  const sizes=[];let si=0,k=0;
+  for(let c=1;c<=nCh;c++){while(k+1<nSc&&sc[k+1].f<=c)k++;let tot=0;for(let j=0;j<sc[k].n;j++)tot+=ssz(si++);sizes.push(tot)}
+  if(!sizes.some(x=>x>0))throw new Error("ไฟล์แบบแบ่งส่วน (fragmented) ยังไม่รองรับ");
+  const trak=mv.slice(tr.s,tr.e),td=new DataView(trak.buffer);
+  const ftyp=mkbox("ftyp",new Uint8Array([77,52,65,32,0,0,0,0,77,52,65,32,109,112,52,50,105,115,111,109]));
+  let pos=ftyp.length+8;const base=pos;
+  for(let i=0;i<nCh;i++){const p=co.b-tr.s+(is64?8+i*8:8+i*4);is64?td.setBigUint64(p,BigInt(pos)):td.setUint32(p,pos);pos+=sizes[i]}
+  const mvhd=find(mv,root,"mvhd"),moov=mkbox("moov",mv.slice(mvhd.s,mvhd.e),trak);
+  const mh=new Uint8Array(8);new DataView(mh.buffer).setUint32(0,8+pos-base);[..."mdat"].forEach((c,i)=>mh[4+i]=c.charCodeAt(0));
+  return new Blob([ftyp,mh,...offs.map((x,i)=>f.slice(x,x+sizes[i])),moov],{type:"audio/mp4"})}
+
+let abCache=null,abFile=null;
+function sendGroq(key,blob,name,extra=true){return new Promise((res,rej)=>{
   const fd=new FormData();fd.append("file",blob,name);fd.append("model","whisper-large-v3");fd.append("language","th");
-  fd.append("response_format","verbose_json");fd.append("timestamp_granularities[]","word");fd.append("timestamp_granularities[]","segment");fd.append("temperature","0");
+  fd.append("response_format","verbose_json");fd.append("timestamp_granularities[]","word");if(extra){fd.append("timestamp_granularities[]","segment");fd.append("temperature","0")}
   const x=new XMLHttpRequest();x.open("POST","https://api.groq.com/openai/v1/audio/transcriptions");
   x.setRequestHeader("Authorization","Bearer "+key);
   x.upload.onprogress=e=>e.lengthComputable&&setP(4,"อัปโหลด",e.loaded/e.total);
@@ -176,18 +220,23 @@ async function transcribe(){
   ensureCtx();
   try{localStorage.setItem("gk",key)}catch(_){}
   try{
-    startP();let j=null;
-    // 1) fastest: send the clip itself (no local audio work) when it fits Groq's 25 MB limit
-    if(file.size<=24*1048576){
-      try{setP(4,"อัปโหลดคลิปตรงๆ",0);j=await sendGroq(key,new File([file],"clip.mp4",{type:"video/mp4"}),"clip.mp4")}
-      catch(e){if([401,403,429].includes(e.status))throw e;j=null}
+    startP();let j=null,why="";
+    const call=(b,n)=>sendGroq(key,b,n,true).catch(e=>{if(e.status===400&&/timestamp|granular|temperature|segment/i.test(e.message))return sendGroq(key,b,n,false);throw e});
+    // 0) best: lift the audio track out of the file (tiny m4a, no decoding, works for big clips)
+    try{setP(1,"แยกเสียงออกจากคลิป",null);const ab=await extractAudioM4a(file);abFile=file;abCache=ab;
+      setP(4,"อัปโหลดเสียง ("+(ab.size/1048576).toFixed(1)+" MB)",0);j=await call(ab,"a.m4a")}
+    catch(e){if([401,403,429].includes(e.status))throw e;j=null;why=(e.message||"").slice(0,90)}
+    // 1) otherwise send the clip itself (no local audio work) when it fits Groq's 25 MB limit
+    if(!j&&file.size<=24*1048576){
+      try{setP(4,"อัปโหลดคลิปตรงๆ",0);j=await call(new File([file],"clip.mp4",{type:"video/mp4"}),"clip.mp4")}
+      catch(e){if([401,403,429].includes(e.status))throw e;j=null;why=(e.message||"").slice(0,90)}
     }
     // 2) otherwise extract audio here (decode, or silent real-time capture if Safari hangs)
     if(!j){
       let wav=null;
       if(!forceCap){
         try{
-          const mb=(file.size/1048576).toFixed(0);
+          const mb=(file.size/1048576).toFixed(0);if(why)msg("อัปโหลดตรงๆ ไม่ผ่าน: "+why);
           setP(1,`อ่านไฟล์ (${mb} MB)`,0);
           const buf=await readBuf(file,f=>setP(1,`อ่านไฟล์ (${mb} MB)`,f));
           setP(2,"ถอดรหัสเสียงจากคลิป (รอสูงสุด 25 วิ)",null);
@@ -200,9 +249,10 @@ async function transcribe(){
         try{wav=await capture()}
         catch(e){endP("อัดเสียงไม่สำเร็จ: "+(e.message||e.name)+" ถ้าเบราว์เซอร์ไม่ยอมเล่นคลิปเอง ให้แตะ 2. ถอดเสียง อีกครั้ง");return}
       }
-      setP(4,"อัปโหลดเสียง",0);j=await sendGroq(key,wav,"a.wav");
+      setP(4,"อัปโหลดเสียง",0);j=await call(wav,"a.wav");
     }
-    lines=fromResult(j);renderEditor();
+    try{lines=fromResult(j)}catch(_){lines=toLines(toWords(j.words||[]))}
+    try{renderEditor()}catch(_){}
     endP("เสร็จแล้ว: "+lines.length+" บรรทัด กดเล่นเพื่อดูซับ");
   }catch(e){endP("ผิดพลาด: "+(e.message||e))}}
 // ---- drawing
@@ -258,9 +308,10 @@ $("ex").onclick=async()=>{
   if(!window.MediaRecorder||!cv.captureStream)return msg("เบราว์เซอร์นี้ยังอัดวิดีโอไม่ได้ ลองอัปเดต iOS");
   try{
     $("stage").scrollIntoView({block:"center"});document.body.style.overflow="hidden";
-    ensureCtx();ensureSrc();
-    await actx.resume();
-    const st=cv.captureStream(30);dst.stream.getAudioTracks().forEach(t=>st.addTrack(t));
+    ensureCtx();await actx.resume();if(!dst)dst=actx.createMediaStreamDestination();
+    let abuf=null;
+    try{msg("เตรียมเสียง…");const ab=(abFile===file&&abCache)||await extractAudioM4a(file);abFile=file;abCache=ab;abuf=await decodeP(await ab.arrayBuffer())}catch(_){}
+    const st=cv.captureStream(30);if(abuf)dst.stream.getAudioTracks().forEach(t=>st.addTrack(t));
     const mt=["video/mp4;codecs=avc1","video/mp4","video/webm;codecs=vp9","video/webm"].find(m=>MediaRecorder.isTypeSupported(m));
     const rec=new MediaRecorder(st,mt?{mimeType:mt,videoBitsPerSecond:6e6,audioBitsPerSecond:128e3}:{videoBitsPerSecond:6e6}),ch=[];
     rec.ondataavailable=e=>{if(e.data.size)ch.push(e.data)};
@@ -268,10 +319,12 @@ $("ex").onclick=async()=>{
       $("out").innerHTML=`<video src="${u}" controls playsinline></video><div class="btns"><button id="sv" type="button" class="p">บันทึก / แชร์</button><a id="dl" href="${u}" download="captioned.${ext}"><button type="button" style="width:100%">ดาวน์โหลด</button></a></div>`;
       $("sv").onclick=async()=>{const f=new File([b],"captioned."+ext,{type});try{if(navigator.canShare&&navigator.canShare({files:[f]}))await navigator.share({files:[f]});else $("dl").click()}catch(_){}};
       msg("เสร็จแล้ว กด บันทึก / แชร์ แล้วเลือก Save Video");$("out").scrollIntoView({block:"center"})};
-    vid.pause();vid.currentTime=0;await new Promise(r=>setTimeout(r,400));
-    rec.start();vid.play();msg("กำลังอัด… อย่าปิดหน้าจอ");
-    vid.addEventListener("ended",()=>rec.stop(),{once:true});
-  }catch(e){document.body.style.overflow="";msg("ส่งออกไม่สำเร็จ: "+(e.message||e))}};
+    vid.pause();vid.currentTime=0;vid.muted=!!abuf;await new Promise(r=>setTimeout(r,400));
+    if(abuf){const bs=actx.createBufferSource();bs.buffer=abuf;bs.connect(dst);
+      vid.addEventListener("playing",()=>{try{bs.start(0,Math.min(vid.currentTime,abuf.duration-.01))}catch(_){}},{once:true})}
+    rec.start();vid.play();msg("กำลังอัด… อย่าปิดหน้าจอ"+(abuf?"":" (ไม่มีเสียง: ดึงเสียงไม่ได้)"));
+    vid.addEventListener("ended",()=>{rec.stop();vid.muted=false},{once:true});
+  }catch(e){document.body.style.overflow="";vid.muted=false;msg("ส่งออกไม่สำเร็จ: "+(e.message||e))}};
 try{$("key").value=localStorage.getItem("gk")||""}catch(_){}
 try{["Kanit","Prompt","Sarabun","Mitr"].forEach(f=>document.fonts.load(`700 40px "${f}"`,"กขค"))}catch(_){}
 requestAnimationFrame(frame);
