@@ -20,7 +20,13 @@ canvas{display:block;width:auto;height:auto;max-width:100%;max-height:36vh;max-h
 #top{position:sticky;top:env(safe-area-inset-top,0px);z-index:30;background:var(--bg);margin:0 -16px 10px;padding:6px 16px 4px;box-shadow:0 8px 8px -8px rgba(0,0,0,.5)}
 #top .bar{margin:8px 0 2px}
 #top.big .stage canvas{max-height:62vh;max-height:62dvh}
-#top .stage.rec canvas{max-height:20vh;max-height:20dvh}
+#xp{display:none;position:absolute;inset:0;z-index:5;background:#16161b;color:#fff;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:12px;text-align:center}
+.stage.exp #xp{display:flex}
+#xpp{font-size:46px;font-weight:700;font-variant-numeric:tabular-nums}
+#xpb{width:82%;height:8px;border-radius:4px;background:#34343c;overflow:hidden}
+#xpf{display:block;height:100%;width:0;background:var(--acc)}
+#xpt{font-size:12px;color:#b8b8c4;line-height:1.5;white-space:pre-line}
+#xp button{background:#2a2a32;color:#fff;border-color:#3a3a44;padding:6px 12px;font-size:13px}
 body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);background:var(--bg);z-index:40}
 .card textarea{width:100%;font:inherit;padding:8px;border-radius:8px;background:var(--bg);color:var(--fg);border:1px solid var(--line)}
 .card summary{cursor:pointer;color:var(--mut);font-size:14px;margin:6px 0}
@@ -54,9 +60,10 @@ small{display:block;color:var(--mut);line-height:1.5}
 </head>
 <body>
 <main>
-<h1>Thai Captions <span style="font-size:12px;color:var(--mut);font-weight:400">v15</span></h1>
+<h1>Thai Captions <span style="font-size:12px;color:var(--mut);font-weight:400">v16</span></h1>
 <div id="top">
-<div class="stage" id="stage"><video id="vid" playsinline></video><canvas id="cv"></canvas></div>
+<div class="stage" id="stage"><video id="vid" playsinline></video><canvas id="cv"></canvas>
+<div id="xp"><div id="xpp">0%</div><div id="xpb"><i id="xpf"></i></div><div id="xpt">กำลังเตรียม…</div><button id="xpc" type="button">⏹ ยกเลิก</button></div></div>
 <div class="bar"><button id="pl" type="button">▶ เล่น</button><input id="sc" type="range" min="0" max="1000" value="0" aria-label="เลื่อนเวลา"><button id="zm" type="button">ขยาย</button></div>
 </div>
 
@@ -81,10 +88,10 @@ small{display:block;color:var(--mut);line-height:1.5}
   <div class="row"><label for="of" style="white-space:normal">เลื่อนซับ <span id="ofv">-0.25</span> วิ<br><span style="font-size:12px">− เร็วขึ้น / + ช้าลง</span></label><input id="of" type="range" min="-100" max="100" value="-25"></div>
   <div class="row"><label for="c1">สีตัวอักษร</label><input id="c1" type="color" value="#ffffff"></div>
   <div class="row"><label for="c2">สีเน้นคำที่พูด</label><input id="c2" type="color" value="#ffd400"></div>
-  <div class="row"><label for="st">ขอบดำ</label><input id="st" type="checkbox" checked></div>
+  <div class="row"><label for="sw">ความหนาขอบดำ <span id="swv">16</span></label><input id="sw" type="range" min="0" max="35" value="16"></div>
 </div>
-<div class="card" id="edcard" style="display:none"><div style="color:var(--mut);font-size:14px">แตะ ▶ เพื่อข้ามไปบรรทัดนั้น แก้ข้อความแล้วกดเสร็จบนคีย์บอร์ด ช่องสีส้มคือข้อความที่น่าสงสัย</div>
-  <div class="btns" style="margin:8px 0"><button id="ai" type="button" class="p">✨ ตรวจคำผิด / จัดวรรค (AI)</button><button id="rl" type="button">จัดบรรทัดใหม่</button></div>
+<div class="card" id="edcard" style="display:none"><div style="color:var(--mut);font-size:14px">แตะ ▶ เพื่อข้ามไปบรรทัดนั้น แก้ข้อความแล้วกดเสร็จบนคีย์บอร์ด ช่องสีส้มคือข้อความที่น่าสงสัย (เช่น มีตัวอังกฤษแปลกๆ)</div>
+  <div class="btns" style="margin:8px 0"><button id="rl" type="button">จัดบรรทัดใหม่</button><span></span></div>
   <div id="aimsg" style="color:var(--mut);font-size:14px;min-height:18px;margin-bottom:6px"></div>
   <details><summary>คำศัพท์เฉพาะ (กันไม่ให้ตัดคำ / แก้คำผิดประจำ)</summary>
     <textarea id="gl" rows="4" placeholder="ท่านประธาน&#10;ใจฟู&#10;ประทาน=ประธาน"></textarea>
@@ -98,7 +105,7 @@ small{display:block;color:var(--mut);line-height:1.5}
 <script>
 const $=id=>document.getElementById(id),cv=$("cv"),ctx=cv.getContext("2d"),vid=$("vid");
 let W=540,H=960;cv.width=W;cv.height=H;
-const S={style:"pop",font:"Kanit",size:60,pos:72,color:"#ffffff",hi:"#ffd400",stroke:true,off:-.25};
+const S={style:"pop",font:"Kanit",size:60,pos:72,color:"#ffffff",hi:"#ffd400",sw:.16,off:-.25};
 const msg=m=>$("msg").textContent=m;
 // ---- demo data (shown until a real clip is transcribed)
 const SCRIPT=[["สวัสดี","ครับ","วันนี้","มา","แนะนำ","เสื้อ","ตัวใหม่"],["ผ้าเนื้อดี","ใส่สบาย","ราคา","ไม่แพง"],["กดสั่งซื้อ","ได้เลย","ที่ลิงก์","ด้านล่าง"]];
@@ -218,34 +225,6 @@ function buildSegs(j){const W=j.words||[],G=j.segments||[];
     if(ins.length){a=Math.max(sg.start,ins[0].start);b=Math.min(sg.end,ins[ins.length-1].end)}
     if(b-a<.2){a=sg.start;b=sg.end}return{a,b,text:(sg.text||"").trim()}}).filter(g=>g.text))}
 function fromResult(j){segs=buildSegs(j);editedAny=false;return layoutSegs(segs)}
-// ---- AI proofreading through Groq chat (fixes misheard words, drops gibberish, adds phrase breaks "|")
-const AI_MODELS=["llama-3.3-70b-versatile","openai/gpt-oss-120b","llama-3.1-8b-instant"];
-function parseAi(t){const m=[];t.replace(/```[a-z]*/gi,"").split(/\r?\n/).forEach(l=>{const x=l.match(/^\s*(\d+)[\s:：.)\-]+(.+?)\s*$/);if(x)m[+x[1]]=x[2]});return m}
-async function aiFix(){
-  const am=t=>$("aimsg").textContent=t,key=$("key").value.trim();
-  if(!key)return am("ใส่ Groq API key ก่อน (ช่องด้านบน)");if(!segs.length)return am("ต้องถอดเสียงก่อน");
-  if(editedAny&&!confirm("ข้อความที่แก้ด้วยมือจะถูกแทนที่ด้วยผลจาก AI ทำต่อไหม?"))return;
-  const gl=glossary(),extra=(gl.keep.length?"\nKeep these terms exactly and never split them: "+gl.keep.join(", ")+".":"")+(gl.rep.length?"\nAlways correct: "+gl.rep.map(r=>r[0]+" -> "+r[1]).join(", ")+".":"");
-  const sys="You proofread Thai speech-to-text transcripts used as video subtitles. For every numbered line: (1) fix words the recogniser clearly misheard or misspelled, using the surrounding context; (2) remove stray Latin-letter gibberish or noise that is clearly a recognition error; (3) insert | at natural phrase breaks, about 8-18 Thai characters per phrase, never splitting a compound word or a title plus name (for example keep ท่านประธาน and ลุงยาม together), and keep tail particles such as ครับ ค่ะ นะ attached to the phrase before them. Never move words from one numbered line to another. Do not add, summarise, translate or reorder content. If unsure, leave the text unchanged. Example: 0\tคุณลุงยามนั่งอยู่หน้าประตูครับ -> 0\tคุณลุงยาม|นั่งอยู่หน้าประตูครับ. Reply with exactly one line per input line in the form number<TAB>text and nothing else."+extra;
-  const input=segs.map((g,i)=>i+"\t"+g.text.replace(/\|/g,"")).join("\n");
-  let out=null,err="";const t0=performance.now(),iv=setInterval(()=>am("AI กำลังตรวจคำผิดและจัดวรรค… "+Math.round((performance.now()-t0)/1000)+" วิ"),500);
-  try{
-    for(const model of AI_MODELS){
-      try{const r=await fetch("https://api.groq.com/openai/v1/chat/completions",{method:"POST",headers:{Authorization:"Bearer "+key,"Content-Type":"application/json"},
-          body:JSON.stringify({model,temperature:0,messages:[{role:"system",content:sys},{role:"user",content:input}]})});
-        if(r.status===401||r.status===403){err="คีย์ไม่ถูกต้อง ("+r.status+")";break}
-        if(r.status===429){err="ใช้เกินโควตา (429) รอสักครู่แล้วลองใหม่";break}
-        if(!r.ok){err=model+" ตอบ "+r.status;continue}
-        const j=await r.json();out=j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content;if(out)break}
-      catch(e){err=e.message||String(e)}}
-  }finally{clearInterval(iv)}
-  if(!out)return am("ใช้ AI ไม่ได้: "+err+" (ยังใช้การจัดวรรคอัตโนมัติแบบเดิมอยู่)");
-  const fx=parseAi(out);let n=0;
-  fx.forEach((txt,i)=>{if(!segs[i])return;const o=segs[i].text.replace(/[|\s]/g,""),c=txt.replace(/[|\s]/g,""),r=c.length/Math.max(1,o.length);
-    if(r<.6||r>1.5)return;                                   // ignore answers that look like rewrites
-    if(c!==o||txt.includes("|")){segs[i].text=txt;n++}});
-  lines=layoutSegs(segs);editedAny=false;renderEditor();
-  am(n?`AI ตรวจแล้ว ปรับ ${n} จาก ${segs.length} ช่วง ดูผลและแก้เพิ่มได้ในรายการด้านล่าง`:"AI ไม่พบจุดที่ต้องแก้")}
 const fmt=t=>Math.floor(t/60)+":"+String(Math.floor(t%60)).padStart(2,"0");
 function renderEditor(){
   const ed=$("ed");ed.innerHTML="";$("edcard").style.display=lines.length&&hasVid?"block":"none";
@@ -353,7 +332,7 @@ const ease=x=>{x=Math.min(1,Math.max(0,x));const c=1.70158;return 1+(c+1)*Math.p
 const fnt=s=>`700 ${s}px "${S.font}", sans-serif`;
 function setFont(s){ctx.font=fnt(s);ctx.fs=s;ctx.textAlign="center";ctx.textBaseline="middle"}
 function txt(str,x,y,fill,o={}){const{sc=1,rot=0,al=1}=o;ctx.save();ctx.translate(x,y);ctx.rotate(rot);ctx.scale(sc,sc);ctx.globalAlpha=al;
-  if(S.stroke){ctx.lineWidth=ctx.fs*.16;ctx.lineJoin="round";ctx.strokeStyle="#000";ctx.strokeText(str,0,0)}
+  if(S.sw>0){ctx.lineWidth=ctx.fs*S.sw;ctx.lineJoin="round";ctx.strokeStyle="#000";ctx.strokeText(str,0,0)}
   ctx.fillStyle=fill;ctx.fillText(str,0,0);ctx.restore()}
 function chunks(L){if(L.ch)return L.ch;const out=[];let c=null;
   L.words.forEach(o=>{if(!c)c={w:"",s:o.s,e:o.e};c.w+=o.w;c.e=o.e;if(c.e-c.s>=.4||c.w.length>=9){out.push(c);c=null}});
@@ -427,7 +406,6 @@ vid.addEventListener("ended",()=>{if(!recSess)setTimeout(()=>heal(0,false),150)}
 const lbl=()=>$("pl").textContent=(hasVid?!vid.paused:playing)?"⏸ หยุด":"▶ เล่น";
 try{$("gl").value=localStorage.getItem("gd")||""}catch(_){}
 $("gl").oninput=()=>{try{localStorage.setItem("gd",$("gl").value)}catch(_){}};
-$("ai").onclick=aiFix;
 $("rl").onclick=()=>{if(!segs.length)return;if(editedAny&&!confirm("ข้อความที่แก้ด้วยมือจะถูกแทนที่ ทำต่อไหม?"))return;lines=layoutSegs(segs);editedAny=false;renderEditor();$("aimsg").textContent="จัดบรรทัดใหม่แล้ว"};
 $("zm").onclick=()=>{const t=$("top");t.classList.toggle("big");$("zm").textContent=t.classList.contains("big")?"ย่อ":"ขยาย"};
 $("pl").onclick=()=>{if(hasVid){if(vid.paused){if(vid.ended||(vid.duration&&vid.currentTime>=vid.duration-.05))vid.currentTime=0;vid.play().catch(()=>{})}else vid.pause()}else playing=!playing;lbl()};
@@ -443,7 +421,7 @@ $("sz").oninput=e=>{S.size=+e.target.value;$("szv").textContent=S.size};
 $("ps").oninput=e=>S.pos=+e.target.value;
 $("of").oninput=e=>{S.off=e.target.value/100;$("ofv").textContent=S.off.toFixed(2)};
 $("c1").oninput=e=>S.color=e.target.value;$("c2").oninput=e=>S.hi=e.target.value;
-$("st").onchange=e=>S.stroke=e.target.checked;
+$("sw").oninput=e=>{S.sw=e.target.value/100;$("swv").textContent=e.target.value};
 // ---- export: record canvas + audio in real time
 let recSess=null,recTrack=null,wake=null,recDraw0=0;
 async function keepAwake(){try{if(navigator.wakeLock)wake=await navigator.wakeLock.request("screen")}catch(_){}}
@@ -454,8 +432,10 @@ $("ex").onclick=async()=>{
   if(!hasVid||!lines.length)return msg("ต้องเลือกคลิปและถอดเสียงก่อน");
   if(!window.MediaRecorder||!cv.captureStream)return msg("เบราว์เซอร์นี้ยังอัดวิดีโอไม่ได้ ลองอัปเดต iOS");
   let cancelled=false,iv=null,bs=null;
+  $("stage").classList.add("exp");$("xpp").textContent="0%";$("xpf").style.width="0";$("xpt").textContent="กำลังเตรียมวิดีโอและเสียง…";
+  $("xpc").onclick=()=>{if(recSess)recSess.cancel()};
   await heal(0,false);setSize(+$("res").value);
-  const done=()=>{clearInterval(iv);recSess=null;recMode=false;recTrack=null;releaseWake();if(hasVid)setSize(960);$("stage").classList.remove("rec");$("ex").textContent="3. ส่งออกคลิปพร้อมซับ";vid.muted=false;try{bs&&bs.stop()}catch(_){}releaseCtx();setTimeout(()=>heal(0,false),150)};
+  const done=()=>{clearInterval(iv);recSess=null;recMode=false;recTrack=null;releaseWake();if(hasVid)setSize(960);$("stage").classList.remove("exp");$("ex").textContent="3. ส่งออกคลิปพร้อมซับ";vid.muted=false;try{bs&&bs.stop()}catch(_){}releaseCtx();setTimeout(()=>heal(0,false),150)};
   try{
     ensureCtx();await actx.resume();if(!dst)dst=actx.createMediaStreamDestination();
     let abuf=null;
@@ -473,7 +453,7 @@ $("ex").onclick=async()=>{
       $("sv").onclick=async()=>{const f=new File([b],"captioned."+ext,{type});try{if(navigator.canShare&&navigator.canShare({files:[f]}))await navigator.share({files:[f]});else $("dl").click()}catch(_){}};
       msg("เสร็จแล้ว กด บันทึก / แชร์ แล้วเลือก Save Video");$("out").scrollIntoView({block:"center"})};
     recSess={cancel(){cancelled=true;vid.pause();try{rec.stop()}catch(_){}}};
-    $("stage").classList.add("rec");$("ex").textContent="⏹ ยกเลิกการอัด";
+    $("ex").textContent="⏹ ยกเลิกการอัด";
     vid.pause();
     if(vid.currentTime>.05){vid.currentTime=0;await new Promise(r=>vid.addEventListener("seeked",r,{once:true}))}
     vid.muted=!!abuf;await new Promise(r=>setTimeout(r,400));
@@ -485,6 +465,8 @@ $("ex").onclick=async()=>{
     if(cancelled)return;
     rec.start(1000);if(bs){try{bs.start(0,Math.min(mt0,abuf.duration-.01))}catch(_){}}
     iv=setInterval(()=>{const d=vid.duration||0,ct=curT(),p=d?ct/d:0;
+      const pc=Math.min(99,Math.round(p*100));$("xpp").textContent=pc+"%";$("xpf").style.width=pc+"%";
+      $("xpt").textContent=`ส่งออก ${W}×${H}\n${ct.toFixed(1)} / ${d.toFixed(1)} วินาที\nห้ามปิดหน้าจอ`+(performance.now()-lastDraw>1500?"\n⚠ ภาพหยุดวาด":"");
       msg(`กำลังอัด ${W}×${H} ${Math.round(p*100)}% (${ct.toFixed(1)}/${d.toFixed(1)} วิ) เลื่อนหน้าได้ ภาพเล็กด้านขวาบนคือสิ่งที่กำลังอัด`+(abuf?"":" · ไม่มีเสียง")+(performance.now()-lastDraw>1500?" · ⚠ ภาพหยุดวาด":"")+` · วาดแล้ว ${frames-recDraw0} เฟรม`+(errMsg?" · ข้อผิดพลาด: "+errMsg:""))},300);
     vid.addEventListener("ended",()=>{if(!cancelled)rec.stop()},{once:true});
   }catch(e){done();msg("ส่งออกไม่สำเร็จ: "+(e.message||e))}};
