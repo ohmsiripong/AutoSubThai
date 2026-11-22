@@ -14,7 +14,12 @@ main{max-width:480px;margin:0 auto;padding:16px}
 h1{font-size:18px;margin:0 0 12px}
 .stage{width:min(100%,300px);margin:0 auto;border-radius:16px;overflow:hidden;border:1px solid var(--line);background:#000}
 canvas{width:100%;height:auto;display:block}
-#vid{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.stage{position:relative}
+.stage canvas{position:relative;z-index:1}
+#vid{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:0}
+.ln{display:flex;gap:8px;margin:6px 0}
+.ln input{flex:1;min-width:0;font:inherit;padding:8px;border-radius:8px;background:var(--bg);color:var(--fg);border:1px solid var(--line)}
+.ln button{padding:8px 10px;white-space:nowrap}
 .bar{display:flex;gap:10px;align-items:center;margin:12px 0}
 .bar input{flex:1}
 button,input,select{font:inherit}
@@ -41,9 +46,8 @@ small{display:block;color:var(--mut);line-height:1.5}
 </head>
 <body>
 <main>
-<h1>Thai Captions <span style="font-size:12px;color:var(--mut);font-weight:400">v4</span></h1>
-<div class="stage"><canvas id="cv"></canvas></div>
-<video id="vid" playsinline></video>
+<h1>Thai Captions <span style="font-size:12px;color:var(--mut);font-weight:400">v5</span></h1>
+<div class="stage" id="stage"><video id="vid" playsinline></video><canvas id="cv"></canvas></div>
 <div class="bar"><button id="pl" type="button">▶ เล่น</button><input id="sc" type="range" min="0" max="1000" value="0" aria-label="เลื่อนเวลา"></div>
 
 <div class="card">
@@ -63,10 +67,12 @@ small{display:block;color:var(--mut);line-height:1.5}
   <div class="row"><label for="ft">ฟอนต์</label><select id="ft"><option>Kanit</option><option>Prompt</option><option>Sarabun</option><option>Mitr</option></select></div>
   <div class="row"><label for="sz">ขนาด <span id="szv">60</span></label><input id="sz" type="range" min="30" max="100" value="60"></div>
   <div class="row"><label for="ps">ตำแหน่ง (บน ↔ ล่าง)</label><input id="ps" type="range" min="10" max="90" value="72"></div>
+  <div class="row"><label for="of">เลื่อนซับ <span id="ofv">0.0</span> วิ (− เร็วขึ้น / + ช้าลง)</label><input id="of" type="range" min="-100" max="100" value="0"></div>
   <div class="row"><label for="c1">สีตัวอักษร</label><input id="c1" type="color" value="#ffffff"></div>
   <div class="row"><label for="c2">สีเน้นคำที่พูด</label><input id="c2" type="color" value="#ffd400"></div>
   <div class="row"><label for="st">ขอบดำ</label><input id="st" type="checkbox" checked></div>
 </div>
+<div class="card" id="edcard" style="display:none"><div style="color:var(--mut);font-size:14px">แตะ ▶ เพื่อข้ามไปบรรทัดนั้น แก้ข้อความแล้วกดเสร็จบนคีย์บอร์ด</div><div id="ed"></div></div>
 <button id="ex" type="button" class="p" style="width:100%">3. ส่งออกคลิปพร้อมซับ</button>
 <div id="out"></div>
 <small style="margin-top:12px">การส่งออกอัดแบบเรียลไทม์ (คลิป 2 นาที = รอ ~2 นาที) ต้องเปิดหน้าจอและอยู่หน้านี้ตลอด</small>
@@ -74,7 +80,7 @@ small{display:block;color:var(--mut);line-height:1.5}
 <script>
 const $=id=>document.getElementById(id),cv=$("cv"),ctx=cv.getContext("2d"),vid=$("vid");
 let W=540,H=960;cv.width=W;cv.height=H;
-const S={style:"pop",font:"Kanit",size:60,pos:72,color:"#ffffff",hi:"#ffd400",stroke:true};
+const S={style:"pop",font:"Kanit",size:60,pos:72,color:"#ffffff",hi:"#ffd400",stroke:true,off:0};
 const msg=m=>$("msg").textContent=m;
 // ---- demo data (shown until a real clip is transcribed)
 const SCRIPT=[["สวัสดี","ครับ","วันนี้","มา","แนะนำ","เสื้อ","ตัวใหม่"],["ผ้าเนื้อดี","ใส่สบาย","ราคา","ไม่แพง"],["กดสั่งซื้อ","ได้เลย","ที่ลิงก์","ด้านล่าง"]];
@@ -134,9 +140,29 @@ async function capture(){
   const n=ch.reduce((a,c)=>a+c.length,0),buf=actx.createBuffer(1,Math.max(1,n),actx.sampleRate),d=new Float32Array(n);
   let o=0;ch.forEach(c=>{d.set(c,o);o+=c.length});buf.copyToChannel(d,0);
   return resampleWav(buf)}
+// ---- Thai words, even time spread, and building lines from Whisper segments (more reliable than raw Thai word stamps)
+const segWords=t=>window.Intl&&Intl.Segmenter?[...new Intl.Segmenter("th",{granularity:"word"}).segment(t)].map(g=>g.segment).filter(x=>x.trim()):t.split(/\s+/).filter(Boolean);
+function spread(arr,a,b){const tot=arr.reduce((s,w)=>s+w.length,0)||1;let x=a;return arr.map(w=>{const d=(b-a)*w.length/tot,o={w,s:x,e:x+d};x+=d;return o})}
+function fromResult(j){
+  const W=j.words||[],G=j.segments||[];if(!G.length)return toLines(toWords(W));
+  const out=[];
+  G.forEach(sg=>{
+    const ins=W.filter(w=>w.start>=sg.start-.15&&w.end<=sg.end+.15);let a=sg.start,b=sg.end;
+    if(ins.length){a=Math.max(sg.start,ins[0].start);b=Math.min(sg.end,ins[ins.length-1].end)}
+    if(b-a<.2){a=sg.start;b=sg.end}
+    toLines(spread(segWords(sg.text||""),a,b)).forEach(l=>out.push(l))});
+  return out}
+const fmt=t=>Math.floor(t/60)+":"+String(Math.floor(t%60)).padStart(2,"0");
+function renderEditor(){
+  const ed=$("ed");ed.innerHTML="";$("edcard").style.display=lines.length&&hasVid?"block":"none";
+  lines.forEach(L=>{const r=document.createElement("div");r.className="ln";
+    const b=document.createElement("button");b.type="button";b.textContent="▶ "+fmt(L.s);b.onclick=()=>{vid.currentTime=L.s};
+    const i=document.createElement("input");i.value=L.t;
+    i.onchange=()=>{const w=spread(segWords(i.value),L.s,L.e);L.words=w;L.t=w.map(x=>x.w).join("")};
+    r.append(b,i);ed.append(r)})}
 function sendGroq(key,blob,name){return new Promise((res,rej)=>{
   const fd=new FormData();fd.append("file",blob,name);fd.append("model","whisper-large-v3");fd.append("language","th");
-  fd.append("response_format","verbose_json");fd.append("timestamp_granularities[]","word");
+  fd.append("response_format","verbose_json");fd.append("timestamp_granularities[]","word");fd.append("timestamp_granularities[]","segment");fd.append("temperature","0");
   const x=new XMLHttpRequest();x.open("POST","https://api.groq.com/openai/v1/audio/transcriptions");
   x.setRequestHeader("Authorization","Bearer "+key);
   x.upload.onprogress=e=>e.lengthComputable&&setP(4,"อัปโหลด",e.loaded/e.total);
@@ -176,7 +202,7 @@ async function transcribe(){
       }
       setP(4,"อัปโหลดเสียง",0);j=await sendGroq(key,wav,"a.wav");
     }
-    lines=toLines(toWords(j.words||[]));
+    lines=fromResult(j);renderEditor();
     endP("เสร็จแล้ว: "+lines.length+" บรรทัด กดเล่นเพื่อดูซับ");
   }catch(e){endP("ผิดพลาด: "+(e.message||e))}}
 // ---- drawing
@@ -209,7 +235,7 @@ let last=performance.now();
 function frame(n){const dt=Math.min(.1,(n-last)/1000);last=n;let t;
   if(hasVid){t=vid.currentTime;if(vid.duration)$("sc").value=t/vid.duration*1000}
   else{if(playing){demoT+=dt;if(demoT>DUR)demoT=0}t=demoT;$("sc").value=t/DUR*1000}
-  draw(t);requestAnimationFrame(frame)}
+  draw(t-S.off);requestAnimationFrame(frame)}
 // ---- controls
 const lbl=()=>$("pl").textContent=(hasVid?!vid.paused:playing)?"⏸ หยุด":"▶ เล่น";
 $("pl").onclick=()=>{if(hasVid){vid.paused?vid.play():vid.pause()}else playing=!playing;lbl()};
@@ -217,12 +243,13 @@ vid.onplay=vid.onpause=lbl;
 $("sc").oninput=e=>{const v=e.target.value/1000;if(hasVid)vid.currentTime=v*(vid.duration||0);else demoT=v*DUR};
 $("pick").onclick=()=>$("file").click();
 $("file").onchange=e=>{file=e.target.files[0];if(!file)return;hasVid=false;vid.src=URL.createObjectURL(file);lines=[];msg("กำลังโหลดคลิป…")};
-vid.onloadedmetadata=()=>{const s=Math.min(1,1280/Math.max(vid.videoWidth,vid.videoHeight));W=Math.round(vid.videoWidth*s);H=Math.round(vid.videoHeight*s);cv.width=W;cv.height=H;hasVid=true;vid.currentTime=.01;lbl();msg("โหลดแล้ว กด 2. ถอดเสียง")};
+vid.onloadedmetadata=()=>{const s=Math.min(1,960/Math.max(vid.videoWidth,vid.videoHeight));W=Math.round(vid.videoWidth*s);H=Math.round(vid.videoHeight*s);cv.width=W;cv.height=H;hasVid=true;vid.currentTime=.01;lbl();msg("โหลดแล้ว กด 2. ถอดเสียง")};
 $("go").onclick=transcribe;
 document.querySelectorAll("#seg button").forEach(b=>b.onclick=()=>{S.style=b.dataset.s;document.querySelectorAll("#seg button").forEach(x=>x.setAttribute("aria-pressed",x===b))});
 $("ft").onchange=e=>{S.font=e.target.value;try{document.fonts.load(fnt(40),"กขค")}catch(_){}};
 $("sz").oninput=e=>{S.size=+e.target.value;$("szv").textContent=S.size};
 $("ps").oninput=e=>S.pos=+e.target.value;
+$("of").oninput=e=>{S.off=e.target.value/100;$("ofv").textContent=S.off.toFixed(1)};
 $("c1").oninput=e=>S.color=e.target.value;$("c2").oninput=e=>S.hi=e.target.value;
 $("st").onchange=e=>S.stroke=e.target.checked;
 // ---- export: record canvas + audio in real time
@@ -230,20 +257,21 @@ $("ex").onclick=async()=>{
   if(!hasVid||!lines.length)return msg("ต้องเลือกคลิปและถอดเสียงก่อน");
   if(!window.MediaRecorder||!cv.captureStream)return msg("เบราว์เซอร์นี้ยังอัดวิดีโอไม่ได้ ลองอัปเดต iOS");
   try{
+    $("stage").scrollIntoView({block:"center"});document.body.style.overflow="hidden";
     ensureCtx();ensureSrc();
     await actx.resume();
     const st=cv.captureStream(30);dst.stream.getAudioTracks().forEach(t=>st.addTrack(t));
     const mt=["video/mp4;codecs=avc1","video/mp4","video/webm;codecs=vp9","video/webm"].find(m=>MediaRecorder.isTypeSupported(m));
-    const rec=new MediaRecorder(st,mt?{mimeType:mt}:{}),ch=[];
+    const rec=new MediaRecorder(st,mt?{mimeType:mt,videoBitsPerSecond:6e6,audioBitsPerSecond:128e3}:{videoBitsPerSecond:6e6}),ch=[];
     rec.ondataavailable=e=>{if(e.data.size)ch.push(e.data)};
-    rec.onstop=()=>{const type=rec.mimeType||"video/mp4",b=new Blob(ch,{type}),ext=type.includes("mp4")?"mp4":"webm",u=URL.createObjectURL(b);
+    rec.onstop=()=>{document.body.style.overflow="";const type=rec.mimeType||"video/mp4",b=new Blob(ch,{type}),ext=type.includes("mp4")?"mp4":"webm",u=URL.createObjectURL(b);
       $("out").innerHTML=`<video src="${u}" controls playsinline></video><div class="btns"><button id="sv" type="button" class="p">บันทึก / แชร์</button><a id="dl" href="${u}" download="captioned.${ext}"><button type="button" style="width:100%">ดาวน์โหลด</button></a></div>`;
       $("sv").onclick=async()=>{const f=new File([b],"captioned."+ext,{type});try{if(navigator.canShare&&navigator.canShare({files:[f]}))await navigator.share({files:[f]});else $("dl").click()}catch(_){}};
-      msg("เสร็จแล้ว กด บันทึก / แชร์ แล้วเลือก Save Video")};
+      msg("เสร็จแล้ว กด บันทึก / แชร์ แล้วเลือก Save Video");$("out").scrollIntoView({block:"center"})};
     vid.pause();vid.currentTime=0;await new Promise(r=>setTimeout(r,400));
     rec.start();vid.play();msg("กำลังอัด… อย่าปิดหน้าจอ");
     vid.addEventListener("ended",()=>rec.stop(),{once:true});
-  }catch(e){msg("ส่งออกไม่สำเร็จ: "+(e.message||e))}};
+  }catch(e){document.body.style.overflow="";msg("ส่งออกไม่สำเร็จ: "+(e.message||e))}};
 try{$("key").value=localStorage.getItem("gk")||""}catch(_){}
 try{["Kanit","Prompt","Sarabun","Mitr"].forEach(f=>document.fonts.load(`700 40px "${f}"`,"กขค"))}catch(_){}
 requestAnimationFrame(frame);
