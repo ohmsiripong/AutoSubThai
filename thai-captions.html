@@ -60,7 +60,7 @@ small{display:block;color:var(--mut);line-height:1.5}
 </head>
 <body>
 <main>
-<h1>Thai Captions <span style="font-size:12px;color:var(--mut);font-weight:400">v16</span></h1>
+<h1>Thai Captions <span style="font-size:12px;color:var(--mut);font-weight:400">v17</span></h1>
 <div id="top">
 <div class="stage" id="stage"><video id="vid" playsinline></video><canvas id="cv"></canvas>
 <div id="xp"><div id="xpp">0%</div><div id="xpb"><i id="xpf"></i></div><div id="xpt">กำลังเตรียม…</div><button id="xpc" type="button">⏹ ยกเลิก</button></div></div>
@@ -92,6 +92,8 @@ small{display:block;color:var(--mut);line-height:1.5}
 </div>
 <div class="card" id="edcard" style="display:none"><div style="color:var(--mut);font-size:14px">แตะ ▶ เพื่อข้ามไปบรรทัดนั้น แก้ข้อความแล้วกดเสร็จบนคีย์บอร์ด ช่องสีส้มคือข้อความที่น่าสงสัย (เช่น มีตัวอังกฤษแปลกๆ)</div>
   <div class="btns" style="margin:8px 0"><button id="rl" type="button">จัดบรรทัดใหม่</button><span></span></div>
+  <label style="display:flex;gap:8px;align-items:flex-start;font-size:14px;margin:4px 0"><input type="checkbox" id="vad" checked style="margin-top:4px"><span>จับจังหวะซับจากเสียงพูดจริง (กันซับขึ้นก่อนเสียงเมื่อมีดนตรีพื้นหลัง)</span></label>
+  <div id="vms" style="color:var(--mut);font-size:12px;margin-bottom:6px"></div>
   <div id="aimsg" style="color:var(--mut);font-size:14px;min-height:18px;margin-bottom:6px"></div>
   <details><summary>คำศัพท์เฉพาะ (กันไม่ให้ตัดคำ / แก้คำผิดประจำ)</summary>
     <textarea id="gl" rows="4" placeholder="ท่านประธาน&#10;ใจฟู&#10;ประทาน=ประธาน"></textarea>
@@ -169,6 +171,37 @@ async function capture(){
 // ---- Thai words, even time spread, and building lines from Whisper segments (more reliable than raw Thai word stamps)
 const segWords=t=>window.Intl&&Intl.Segmenter?[...new Intl.Segmenter("th",{granularity:"word"}).segment(t)].map(g=>g.segment).filter(x=>x.trim()):t.split(/\s+/).filter(Boolean);
 function spread(arr,a,b){const tot=arr.reduce((s,w)=>s+w.length,0)||1;let x=a;return arr.map(w=>{const d=(b-a)*w.length/tot,o={w,s:x,e:x+d};x+=d;return o})}
+// ---- real-audio timing: find where speech actually is (louder than the music bed) and keep captions inside it
+let vadRuns=null;
+const useVad=()=>vadRuns&&(!$("vad")||$("vad").checked);
+async function vadEnv(blob){
+  const ab=await blob.arrayBuffer(),OAC=window.OfflineAudioContext||window.webkitOfflineAudioContext,c=new OAC(1,1,16000);
+  const buf=await Promise.race([new Promise((res,rej)=>{const p=c.decodeAudioData(ab,res,rej);if(p&&p.catch)p.catch(rej)}),
+    new Promise((_,rej)=>setTimeout(()=>rej(new Error("ถอดรหัสเสียงนานเกินไป")),20000))]);
+  const d=buf.getChannelData(0),sr=buf.sampleRate,hop=Math.max(1,Math.round(sr*.02)),n=Math.floor(d.length/hop),db=new Float32Array(n);
+  for(let i=0;i<n;i++){let s=0;for(let k=i*hop;k<(i+1)*hop;k++)s+=d[k]*d[k];db[i]=10*Math.log10(s/hop+1e-12)}
+  return{db,hop:hop/sr}}
+function vadFrom(env){
+  const db=env.db,n=db.length;if(n<50)return null;
+  const so=Float32Array.from(db).sort(),q=p=>so[Math.floor(p*(n-1))],noise=q(.25),peak=q(.95);
+  if(peak-noise<7)return null;                              // speech and background are about equally loud: cannot tell them apart
+  const thr=noise+.45*(peak-noise),sm=new Float32Array(n);
+  for(let i=0;i<n;i++){let s=0,c=0;for(let k=Math.max(0,i-2);k<=Math.min(n-1,i+2);k++){s+=db[k];c++}sm[i]=s/c}
+  const runs=[];let st=-1;
+  for(let i=0;i<=n;i++){const on=i<n&&sm[i]>thr;if(on&&st<0)st=i;if(!on&&st>=0){runs.push([st*env.hop,i*env.hop]);st=-1}}
+  const m=[];runs.forEach(r=>{const l=m[m.length-1];if(l&&r[0]-l[1]<.4)l[1]=r[1];else m.push([r[0],r[1]])});
+  const out=m.filter(r=>r[1]-r[0]>=.25);return out.length?out:null}
+// speech runs that overlap a Whisper segment; null when the segment is quiet speech we should not second-guess
+function refine(a,b,runs){
+  const ov=runs.map(r=>[Math.max(r[0],a-.3),Math.min(r[1],b+.3)]).filter(r=>r[1]-r[0]>.15);
+  if(!ov.length||b-a<.3)return null;
+  const cover=ov.reduce((s,r)=>s+Math.max(0,Math.min(r[1],b)-Math.max(r[0],a)),0)/(b-a);
+  return cover<.35?null:ov}
+function spreadRuns(arr,runs){
+  const tot=arr.reduce((s,w)=>s+w.length,0)||1,D=runs.reduce((s,r)=>s+r[1]-r[0],0);
+  const map=(f,isEnd)=>{let x=f*D;for(let i=0;i<runs.length;i++){const L=runs[i][1]-runs[i][0];
+    if(x<L||(isEnd&&x<=L+1e-9)||i===runs.length-1)return runs[i][0]+Math.min(x,L);x-=L}return runs[runs.length-1][1]};
+  let c=0;return arr.map(w=>{const o={w,s:map(c/tot,false),e:0};c+=w.length;o.e=map(c/tot,true);return o})}
 // ---- Thai-aware line layout: keep compounds/titles together, tail particles attached, no one-word orphans
 const TAIL=new Set(["ครับ","ค่ะ","คะ","นะ","น่ะ","จ้ะ","จ้า","ล่ะ","สิ","แหละ","เลย","ครับผม","นะครับ","นะคะ","ๆ","ด้วย","อ่ะ","เนอะ","ไหม","มั้ย","หรอก"]);
 const PREF=new Set(["ท่าน","คุณ","นาย","นาง","นางสาว","ลุง","ป้า","น้า","อา","พี่","น้อง","ครู","หมอ","พ่อ","แม่","ปู่","ย่า","ตา","ยาย","ผู้","เจ๊","เฮีย"]);
@@ -181,10 +214,10 @@ function glossary(){const keep=[],rep=[];
     if(k>0)rep.push([l.slice(0,k).trim(),l.slice(k+1).trim()]);else keep.push(l)});
   rep.forEach(r=>{if(r[1])keep.push(r[1])});BUILTIN.forEach(t=>keep.push(t));keep.sort((a,b)=>b.length-a.length);return{keep,rep}}
 // words with timing spread over [a,b]; pe marks a phrase end (2 = AI "|", 1 = a space Whisper left in the text)
-function phraseWords(text,a,b){const all=[];
+function phraseWords(text,a,b,ov){const all=[];
   text.split("|").forEach((chunk,ci,arr)=>{const parts=chunk.split(/\s+/).filter(Boolean);
     parts.forEach((p,pi)=>{const w=segWords(p);w.forEach((x,i)=>all.push({w:x,pe:i===w.length-1?((pi===parts.length-1&&ci<arr.length-1)?2:1):0}))})});
-  const sp=spread(all.map(x=>x.w),a,b);sp.forEach((o,i)=>o.pe=all[i].pe);return sp}
+  const sp=ov?spreadRuns(all.map(x=>x.w),ov):spread(all.map(x=>x.w),a,b);sp.forEach((o,i)=>o.pe=all[i].pe);return sp}
 function glue(ws,keep){const U=[];
   for(let i=0;i<ws.length;i++){let g=[ws[i]],hit=false;
     for(const t of keep){let k=i,acc="";while(k<ws.length&&acc.length<t.length){acc+=ws[k].w;k++}if(acc===t&&k-i>1){g=ws.slice(i,k);i=k-1;hit=true;break}}
@@ -213,7 +246,7 @@ function mergeOrphans(L){const join=(a,b)=>({s:a.s,e:b.e,t:a.t+b.t,words:a.words
   return L}
 function layoutSegs(sg){const gl=glossary(),out=[];
   sg.forEach(g=>{let t=g.text;gl.rep.forEach(([a,b])=>{if(a)t=t.split(a).join(b)});
-    const ws=phraseWords(t,g.a,g.b);if(!ws.length)return;
+    const ws=phraseWords(t,g.a,g.b,useVad()?refine(g.a,g.b,vadRuns):null);if(!ws.length)return;
     breakLines(glue(ws,gl.keep)).forEach(us=>{const w=[].concat(...us.map(u=>u.ws));
       out.push({s:w[0].s,e:w[w.length-1].e,t:w.map(x=>x.w).join(""),words:w.map(x=>({w:x.w,s:x.s,e:x.e}))})})});
   return mergeOrphans(out)}
@@ -292,7 +325,7 @@ async function transcribe(){
   const key=$("key").value.trim();if(!key)return msg("ใส่ Groq API key ก่อน");if(!file)return msg("เลือกคลิปก่อน");
   try{localStorage.setItem("gk",key)}catch(_){}
   try{
-    startP();let j=null,why="";
+    startP();let j=null,why="",lastWav=null;
     const call=(b,n)=>sendGroq(key,b,n,true).catch(e=>{if(e.status===400&&/timestamp|granular|temperature|segment/i.test(e.message))return sendGroq(key,b,n,false);throw e});
     // 0) best: lift the audio track out of the file (tiny m4a, no decoding, works for big clips)
     try{setP(1,"แยกเสียงออกจากคลิป",null);const ab=await extractAudioM4a(file);abFile=file;abCache=ab;
@@ -321,8 +354,14 @@ async function transcribe(){
         try{wav=await capture()}
         catch(e){endP("อัดเสียงไม่สำเร็จ: "+(e.message||e.name)+" ถ้าเบราว์เซอร์ไม่ยอมเล่นคลิปเอง ให้แตะ 2. ถอดเสียง อีกครั้ง");return}
       }
-      setP(4,"อัปโหลดเสียง",0);j=await call(wav,"a.wav");
+      setP(4,"อัปโหลดเสียง",0);lastWav=wav;j=await call(wav,"a.wav");
     }
+    vadRuns=null;let vnote="";
+    try{const src=(abFile===file&&abCache)||lastWav;
+      if(src){setP(5,"วิเคราะห์จังหวะเสียงพูด",null);vadRuns=vadFrom(await vadEnv(src));vnote=vadRuns?"ใช้งานอยู่ พบช่วงเสียงพูด "+vadRuns.length+" ช่วง":"ไม่ได้ใช้ (เสียงพูดกับดนตรีพื้นหลังดังใกล้กัน)"}
+      else vnote="ไม่ได้ใช้ (ไม่มีไฟล์เสียงให้วิเคราะห์)"}
+    catch(e){vadRuns=null;vnote="ไม่ได้ใช้ (วิเคราะห์ไม่สำเร็จ: "+(e.message||e)+")"}
+    $("vms").textContent="จับจังหวะจากเสียงจริง: "+vnote;
     try{lines=fromResult(j)}catch(_){lines=toLines(toWords(j.words||[]))}
     try{renderEditor()}catch(_){}
     endP("เสร็จแล้ว: "+lines.length+" บรรทัด กดเล่นเพื่อดูซับ");
@@ -406,6 +445,7 @@ vid.addEventListener("ended",()=>{if(!recSess)setTimeout(()=>heal(0,false),150)}
 const lbl=()=>$("pl").textContent=(hasVid?!vid.paused:playing)?"⏸ หยุด":"▶ เล่น";
 try{$("gl").value=localStorage.getItem("gd")||""}catch(_){}
 $("gl").oninput=()=>{try{localStorage.setItem("gd",$("gl").value)}catch(_){}};
+$("vad").onchange=()=>$("rl").click();
 $("rl").onclick=()=>{if(!segs.length)return;if(editedAny&&!confirm("ข้อความที่แก้ด้วยมือจะถูกแทนที่ ทำต่อไหม?"))return;lines=layoutSegs(segs);editedAny=false;renderEditor();$("aimsg").textContent="จัดบรรทัดใหม่แล้ว"};
 $("zm").onclick=()=>{const t=$("top");t.classList.toggle("big");$("zm").textContent=t.classList.contains("big")?"ย่อ":"ขยาย"};
 $("pl").onclick=()=>{if(hasVid){if(vid.paused){if(vid.ended||(vid.duration&&vid.currentTime>=vid.duration-.05))vid.currentTime=0;vid.play().catch(()=>{})}else vid.pause()}else playing=!playing;lbl()};
@@ -447,11 +487,21 @@ $("ex").onclick=async()=>{
     const vb=Math.round(Math.min(12e6,Math.max(4e6,W*H*4.8)));
     const rec=new MediaRecorder(st,mt?{mimeType:mt,videoBitsPerSecond:vb,audioBitsPerSecond:128e3}:{videoBitsPerSecond:vb}),ch=[];
     rec.ondataavailable=e=>{if(e.data.size)ch.push(e.data)};
-    rec.onstop=()=>{const was=cancelled;done();if(was){msg("ยกเลิกการอัดแล้ว");return}
+    rec.onstop=async()=>{const was=cancelled;done();if(was){msg("ยกเลิกการอัดแล้ว");return}
       const type=rec.mimeType||"video/mp4",b=new Blob(ch,{type}),ext=type.includes("mp4")?"mp4":"webm",u=URL.createObjectURL(b);
       $("out").innerHTML=`<video src="${u}" controls playsinline></video><div class="btns"><button id="sv" type="button" class="p">บันทึก / แชร์</button><a id="dl" href="${u}" download="captioned.${ext}"><button type="button" style="width:100%">ดาวน์โหลด</button></a></div>`;
-      $("sv").onclick=async()=>{const f=new File([b],"captioned."+ext,{type});try{if(navigator.canShare&&navigator.canShare({files:[f]}))await navigator.share({files:[f]});else $("dl").click()}catch(_){}};
-      msg("เสร็จแล้ว กด บันทึก / แชร์ แล้วเลือก Save Video");$("out").scrollIntoView({block:"center"})};
+      const f=new File([b],"captioned."+ext,{type});
+      const share=()=>{if(navigator.canShare&&navigator.canShare({files:[f]}))return navigator.share({files:[f]});$("dl").click();return Promise.resolve()};
+      $("sv").onclick=()=>{share().catch(()=>{})};
+      // 1) try to open the save sheet by itself (iOS only allows that right after a tap, so it often refuses)
+      let ok=false;try{await share();ok=true}catch(e){ok=!!(e&&e.name==="AbortError")}
+      if(ok){msg("เสร็จแล้ว");return}
+      // 2) otherwise a single tap anywhere on the screen opens it
+      $("xpp").textContent="✓ เสร็จแล้ว";$("xpb").style.display="none";$("xpc").style.display="none";
+      $("xpt").textContent="แตะที่ไหนก็ได้บนหน้าจอ\nเพื่อบันทึกลงอัลบั้ม\n(แล้วเลือก Save Video)";$("stage").classList.add("exp");
+      msg("เสร็จแล้ว แตะที่ไหนก็ได้บนหน้าจอเพื่อบันทึกลงอัลบั้ม");
+      document.addEventListener("click",ev=>{$("stage").classList.remove("exp");$("xpb").style.display="";$("xpc").style.display="";
+        if(ev.target.closest&&(ev.target.closest("#sv")||ev.target.closest("#ex")))return;share().catch(()=>{})},{once:true,capture:true})};
     recSess={cancel(){cancelled=true;vid.pause();try{rec.stop()}catch(_){}}};
     $("ex").textContent="⏹ ยกเลิกการอัด";
     vid.pause();
